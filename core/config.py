@@ -77,7 +77,7 @@ LOG_FILENAME = "app_data/dziennik/app.log"
 # Startowy URL. To punkt startowy dla zupełnie nowego skanu.
 # WAŻNE: Wklej tutaj link do jednego z Twoich NAJSTARSZYCH zdjęć.
 # Dzięki temu program będzie poruszał się od przeszłości do teraźniejszości.
-START_URL = "https://photos.google.com/photo/AF1QipMnTUIRsS1Kc93fWxJHIegjVRplzs7RuUtXs5nQ"
+START_URL = " "
 
 # Kierunek nawigacji po galerii.
 # 'ArrowLeft'  -> do NOWSZYCH zdjęć (od przeszłości do teraźniejszości). ZALECANE.
@@ -226,10 +226,10 @@ NAV_ARROW_RIGHT_SELECTOR = ".SxgK2b.Cwtbxf"
 # Wypełnij te pola, aby otrzymywać powiadomienia (funkcja w budowie).
 
 # Token Twojego bota na Telegramie. Uzyskasz go od @BotFather.
-TELEGRAM_BOT_TOKEN = "6689110458:AAHBTUoayFunVGw4-xFF4RnascZO0zv2MOA"
+TELEGRAM_BOT_TOKEN = " "
 
 # ID Twojego czatu na Telegramie. Możesz je uzyskać np. od bota @userinfobot.
-TELEGRAM_CHAT_ID = "5387338482"
+TELEGRAM_CHAT_ID = " "
 
 # ##############################################################################
 # ===                     SEKCJA 8: USTAWIENIA LOGOWANIA                     ===
@@ -272,14 +272,14 @@ LOG_SAVE_TO_FILE = True
 # --- USTAWIENIA KOPII ZAPASOWEJ DANYCH (dla Menedżera w menu) ---
 
 # Folder na kopie zapasowe danych, umieszczony wewnątrz app_data.
-BACKUP_DIR = "/media/MyDrive/budowa4/app_data/Kopia_Zapasowa_Danych"
+BACKUP_DIR = "/media/Kopia_Zapasowa_Danych"
 
 # Lista kluczowych plików i folderów DANYCH dołączanych do tej kopii.
 # ZMIANA: Używamy PROJECT_ROOT do tworzenia bezpiecznych, absolutnych ścieżek.
 FILES_TO_BACKUP = [
-    "/media/MyDrive/budowa4/core/config.py",
-    "/media/MyDrive/budowa4/app_data/DB/database.db",
-    "/media/MyDrive/google_photos_toolkit/ai-w/test/ai-v2/sesje/PF/session"
+    "/media/config.py",
+    "/media/database.db",
+    "/media/session"
 ]
 
 
@@ -294,7 +294,7 @@ AUTO_BACKUP_ON_START = False
 
 # Konfiguracja dla pełnego backupu projektu, wykonywanego przez launcher.
 PROJECT_BACKUP_CONFIG = {
-        "ARCHIVE_DIR": "/media/MyDrive/budowa4/app_data/Kopia_Zapasowa_Projektu",
+        "ARCHIVE_DIR": "/media/Kopia_Zapasowa_Projektu",
         "BASE_NAME": "projekt_backup",
         "PATTERNS_TO_EXCLUDE": [
             "*.pyc",
@@ -337,13 +337,13 @@ AI_TAGGER_CONFIDENCE_THRESHOLD = 0.9
 #     "/mnt/dysk_zewnetrzny/Fotki_Rodzinne"
 # ]
 LOCAL_SCANNER_DIRECTORIES = [
-    "/media/NEXTCLOUD/winek/files/Dev"
+    "/media"
 ]
 
 # Dedykowany folder do przechowywania baz wektorów dla rozpoznawania twarzy.
 # Zaleca się, aby był to folder poza główną biblioteką.
 # Przykład: "/home/uzytkownik/Aplikacje/FaceDB_Vectors"
-FACE_DB_VECTOR_PATH = "/media/MyDrive/budowa4/FaceDB_Vectors"
+FACE_DB_VECTOR_PATH = "/media/FaceDB_Vectors"
 
     
 # ##############################################################################
