@@ -33,9 +33,9 @@ from rich.prompt import Confirm, Prompt
 from rich.progress import Progress, BarColumn, TextColumn, SpinnerColumn
 
 # --- IMPORTY Z WŁASNYCH MODUŁÓW ---
-from .config import DATABASE_FILE, AI_MODELS_CACHE_DIR, AI_TAGGER_CONFIDENCE_THRESHOLD
+from .config import AI_MODELS_CACHE_DIR, AI_TAGGER_CONFIDENCE_THRESHOLD
 from .utils import create_interactive_menu, check_dependency
-from .database import setup_database
+from .database import setup_database, get_images_to_tag, update_ai_tags_batch
 
 # --- Inicjalizacja i Konfiguracja Modułu ---
 console = Console()
@@ -124,20 +124,13 @@ async def run_ai_tagger_process():
     tagger = AITagger()
 
     await setup_database()
-    images_to_process = []
+    
     with console.status("[cyan]Pobieranie listy obrazów z bazy...[/]"):
         try:
-            async with aiosqlite.connect(DATABASE_FILE) as conn:
-                conn.row_factory = aiosqlite.Row
-                query = """
-                    SELECT id, final_path FROM downloaded_media 
-                    WHERE status = 'downloaded' AND (ai_tags IS NULL OR ai_tags = '' OR ai_tags = '[]')
-                    AND (LOWER(final_path) LIKE '%.jpg' OR LOWER(final_path) LIKE '%.jpeg' OR LOWER(final_path) LIKE '%.png')
-                """
-                cursor = await conn.execute(query)
-                images_to_process = await cursor.fetchall()
-        except aiosqlite.Error as e:
-            console.print(f"[bold red]Błąd bazy danych: {e}[/]"); return
+            # Krok 1: Pobierz listę obrazów za pomocą scentralizowanej funkcji
+            images_to_process = await get_images_to_tag()
+        except Exception as e:
+            console.print(f"[bold red]Błąd bazy danych podczas pobierania obrazów: {e}[/]"); return
         
     if not images_to_process:
         console.print("\n[bold green]✅ Wszystkie obrazy w bazie zostały już otagowane.[/bold green]"); return
@@ -167,15 +160,13 @@ async def run_ai_tagger_process():
             progress.update(task, advance=1)
             
             if len(updates_batch) >= BATCH_SIZE:
-                async with aiosqlite.connect(DATABASE_FILE) as conn:
-                    await conn.executemany("UPDATE downloaded_media SET ai_tags = ? WHERE id = ?", updates_batch)
-                    await conn.commit()
+                # Krok 2: Zapisz partię wyników za pomocą scentralizowanej funkcji
+                await update_ai_tags_batch(updates_batch)
                 updates_batch.clear()
 
+    # Zapisz ostatnią, niepełną partię
     if updates_batch:
-        async with aiosqlite.connect(DATABASE_FILE) as conn:
-            await conn.executemany("UPDATE downloaded_media SET ai_tags = ? WHERE id = ?", updates_batch)
-            await conn.commit()
+        await update_ai_tags_batch(updates_batch)
         
     console.print("\n[bold green]✅ Proces tagowania AI został zakończony![/bold green]")
 

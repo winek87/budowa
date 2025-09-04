@@ -1,3 +1,6 @@
+# plik: core/database.py
+# Wersja 11.2 - Dodano funkcje dla modułu integrity_validator_logic
+
 # -*- coding: utf-8 -*-
 
 # plik: core/database.py
@@ -9,7 +12,8 @@ import logging
 import pickle
 from pathlib import Path
 from collections import defaultdict
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime
 import asyncio
 
 import aiosqlite
@@ -20,11 +24,12 @@ from .config import DATABASE_FILE, MAX_RETRIES
 logger = logging.getLogger(__name__)
 _db_initialized = False
 
+# Wklej tę nową, kompletną wersję funkcji do pliku: core/database.py
 
 async def setup_database():
     """
-    Inicjalizuje i weryfikuje strukturę bazy danych, w tym tabele 
-    dla zaawansowanego rozpoznawania twarzy. Wykonywane tylko raz na sesję.
+    Inicjalizuje i weryfikuje strukturę bazy danych. Jeśli tabele lub kolumny
+    nie istnieją, tworzy je. Ta funkcja jest teraz w pełni idempotentna.
     """
     global _db_initialized
     if _db_initialized:
@@ -36,20 +41,36 @@ async def setup_database():
         db_path.parent.mkdir(parents=True, exist_ok=True)
 
         async with aiosqlite.connect(db_path) as conn:
-            # Tabela główna z mediami
+            # --- Tabela Główna: downloaded_media ---
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS downloaded_media (
-                    id INTEGER PRIMARY KEY, url TEXT NOT NULL UNIQUE, filename TEXT, final_path TEXT,
-                    expected_path TEXT, metadata_json TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    status TEXT, retry_count INTEGER DEFAULT 0, processing_status TEXT,
-                    exif_write_status TEXT, file_hash TEXT, perceptual_hash TEXT,
-                    ai_tags TEXT, source TEXT DEFAULT 'google_photos'
+                    id INTEGER PRIMARY KEY,
+                    url TEXT NOT NULL UNIQUE
                 )""")
-            
-            # Tabela stanu skryptu
+
+            # --- DYNAMICZNA MIGRACJA KOLUMN ---
+            # Najpierw pobieramy listę istniejących kolumn
+            cursor = await conn.execute("PRAGMA table_info(downloaded_media);")
+            existing_columns = {row[1] for row in await cursor.fetchall()}
+
+            # Definiujemy wszystkie kolumny, które POWINNY istnieć
+            all_columns = {
+                "filename": "TEXT", "final_path": "TEXT", "expected_path": "TEXT",
+                "metadata_json": "TEXT", "timestamp": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+                "status": "TEXT", "retry_count": "INTEGER DEFAULT 0",
+                "processing_status": "TEXT", "exif_write_status": "TEXT",
+                "file_hash": "TEXT", "perceptual_hash": "TEXT", "ai_tags": "TEXT",
+                "source": "TEXT DEFAULT 'google_photos'", "google_photos_url": "TEXT"
+            }
+
+            # W pętli dodajemy tylko te kolumny, których brakuje
+            for col_name, col_type in all_columns.items():
+                if col_name not in existing_columns:
+                    await conn.execute(f"ALTER TABLE downloaded_media ADD COLUMN {col_name} {col_type}")
+                    logger.info(f"Dodano brakującą kolumnę '{col_name}' do tabeli 'downloaded_media'.")
+
+            # --- Pozostałe Tabele (bez zmian) ---
             await conn.execute("CREATE TABLE IF NOT EXISTS script_state (key TEXT PRIMARY KEY, value TEXT)")
-            
-            # Tabela znanych osób
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS people (
                     person_id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
@@ -58,8 +79,6 @@ async def setup_database():
                     FOREIGN KEY (source_media_id) REFERENCES downloaded_media (id) ON DELETE SET NULL,
                     UNIQUE(name, model_name)
                 )""")
-            
-            # Tabela wszystkich wykrytych twarzy
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS faces (
                     face_id INTEGER PRIMARY KEY AUTOINCREMENT, media_id INTEGER NOT NULL, person_id INTEGER,
@@ -68,8 +87,6 @@ async def setup_database():
                     FOREIGN KEY (media_id) REFERENCES downloaded_media (id) ON DELETE CASCADE,
                     FOREIGN KEY (person_id) REFERENCES people (person_id) ON DELETE SET NULL
                 )""")
-            
-            # Tabela duplikatów
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS similar_image_pairs (
                     pair_id INTEGER PRIMARY KEY, image_id_a INTEGER, image_id_b INTEGER,
@@ -77,28 +94,11 @@ async def setup_database():
                     FOREIGN KEY (image_id_a) REFERENCES downloaded_media (id) ON DELETE CASCADE,
                     FOREIGN KEY (image_id_b) REFERENCES downloaded_media (id) ON DELETE CASCADE
                 )""")
-            
-            # --- POCZĄTEK ZMIAN: Dodanie nowej kolumny na URL z Takeout ---
-            try:
-                # Ta operacja doda nową kolumnę tylko wtedy, gdy jeszcze nie istnieje.
-                await conn.execute("ALTER TABLE downloaded_media ADD COLUMN google_photos_url TEXT")
-                await conn.commit()
-                logger.info("Pomyślnie dodano kolumnę 'google_photos_url' do tabeli 'downloaded_media'.")
-            except aiosqlite.OperationalError as e:
-                # To jest oczekiwany błąd, jeśli kolumna już istnieje. Ignorujemy go.
-                if "duplicate column name" in str(e):
-                    logger.debug("Kolumna 'google_photos_url' już istnieje. Pomijam dodawanie.")
-                else:
-                    # Rzuć błąd ponownie, jeśli jest to inny, nieoczekiwany problem
-                    raise
-            # --- KONIEC ZMIAN ---
 
-            # Indeksy dla wydajności
+            # Indeksy i czyszczenie
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_faces_media_id ON faces (media_id);")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_faces_person_id ON faces (person_id);")
-
-            # Usunięcie starej, nieużywanej tabeli
-            await conn.execute("DROP TABLE IF EXISTS recognized_faces;")
+            await conn.execute("DROP TABLE IF EXISTS recognized_faces;") # Usuwamy starą tabelę, jeśli istnieje
             await conn.commit()
             
         _db_initialized = True
@@ -106,10 +106,9 @@ async def setup_database():
 
     except aiosqlite.Error as e:
         logger.critical(f"Nie można utworzyć lub zaktualizować bazy danych: {e}", exc_info=True)
-        sys.exit(1)
-
-
-# --- FUNKCJE ZARZĄDZANIA OSOBAMI (PEOPLE) ---
+        # W środowisku testowym nie chcemy zamykać programu
+        if not str(DATABASE_FILE).startswith("file:"):
+             sys.exit(1)
 
 async def add_person(name: str, model_name: str, embedding: np.ndarray, source_media_id: Optional[int] = None) -> Optional[int]:
     """Dodaje nową znaną osobę do bazy danych."""
@@ -168,7 +167,7 @@ async def delete_person(person_id: int):
         logger.error(f"Nie udało się usunąć osoby o ID {person_id}: {e}", exc_info=True)
 
 # --- FUNKCJE ZARZĄDZANIA TWARZAMI (FACES) ---
-
+# ... (bez zmian) ...
 async def add_face(media_id: int, embedding: np.ndarray, facial_area: dict, model_name: str) -> Optional[int]:
     """Dodaje nowo wykrytą (nieznaną) twarz do bazy."""
     await setup_database()
@@ -227,7 +226,7 @@ async def get_media_ids_with_indexed_faces(model_name: str) -> List[int]:
         return []
 
 # --- FUNKCJE DO PRZEGLĄDANIA WYNIKÓW ---
-
+# ... (bez zmian) ...
 async def get_all_tagged_people() -> List[Dict[str, Any]]:
     """Pobiera listę osób, które mają przypisane co najmniej jedno zdjęcie."""
     await setup_database()
@@ -261,9 +260,9 @@ async def get_media_for_person(person_id: int) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"Nie udało się pobrać mediów dla osoby o ID {person_id}: {e}", exc_info=True)
         return []
-
-# --- POZOSTAŁE FUNKCJE POMOCNICZE (np. do pobierania, statystyk) ---
-
+        
+# --- POZOSTAŁE FUNKCJE POMOCNICZE ---
+# ... (bez zmian) ...
 async def get_db_stats() -> defaultdict[str, int]:
     """Asynchronicznie pobiera i agreguje statystyki z bazy danych."""
     await setup_database()
@@ -576,3 +575,866 @@ async def get_records_for_exif_processing(process_mode: str) -> List[aiosqlite.R
         logger.critical("Nie można pobrać danych z bazy dla Exif Writer.", exc_info=True)
         return None
 
+# ##############################################################################
+# ===        NOWA SEKCJA DLA MODUŁU ADVANCED_SCANNER_LOGIC (FAZA 1)         ===
+# ##############################################################################
+
+async def get_records_for_path_correction() -> List[Dict[str, Any]]:
+    """Pobiera rekordy, których final_path i expected_path się nie zgadzają."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            query = """
+                SELECT id, final_path, expected_path FROM downloaded_media
+                WHERE final_path IS NOT NULL AND final_path != ''
+                AND expected_path IS NOT NULL AND expected_path != ''
+                AND final_path != expected_path
+            """
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas pobierania niespójnych ścieżek: {e}", exc_info=True)
+        return []
+
+async def update_final_path(entry_id: int, new_final_path: str):
+    """Aktualizuje final_path dla pojedynczego wpisu w bazie danych."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            await conn.execute("UPDATE downloaded_media SET final_path = ? WHERE id = ?", (new_final_path, entry_id))
+            await conn.commit()
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd aktualizacji final_path dla ID {entry_id}: {e}", exc_info=True)
+
+
+async def get_records_for_filename_fix() -> List[Dict[str, Any]]:
+    """Pobiera rekordy do weryfikacji i potencjalnej naprawy nazwy pliku."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            query = """
+                SELECT id, filename, final_path, expected_path, metadata_json
+                FROM downloaded_media
+                WHERE status = 'downloaded' AND json_valid(metadata_json) = 1
+                AND json_extract(metadata_json, '$.FileName') IS NOT NULL
+                AND filename != json_extract(metadata_json, '$.FileName')
+            """
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania rekordów do naprawy nazw: {e}", exc_info=True)
+        return []
+
+async def update_entry_after_rename(entry_id: int, new_filename: str, new_final_path: str, new_expected_path: str, new_metadata_json: str):
+    """Kompleksowo aktualizuje wpis w bazie po zmianie nazwy pliku."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            await conn.execute(
+                """
+                UPDATE downloaded_media SET
+                    filename = ?, final_path = ?, expected_path = ?, metadata_json = ?
+                WHERE id = ?
+                """,
+                (new_filename, new_final_path, new_expected_path, new_metadata_json, entry_id)
+            )
+            await conn.commit()
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd aktualizacji wpisu po zmianie nazwy dla ID {entry_id}: {e}", exc_info=True)
+
+async def get_records_for_metadata_completion() -> List[Dict[str, Any]]:
+    """Pobiera rekordy, które wymagają uzupełnienia metadanych i expected_path."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            query = """
+                SELECT id, final_path, metadata_json FROM downloaded_media
+                WHERE status = 'downloaded' AND json_valid(metadata_json) = 1
+                AND (expected_path IS NULL OR expected_path = '')
+            """
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania rekordów do uzupełnienia metadanych: {e}", exc_info=True)
+        return []
+
+async def update_entry_with_completed_metadata(entry_id: int, new_metadata_json: str, new_expected_path: str):
+    """Aktualizuje wpis w bazie o uzupełnione metadane i obliczoną ścieżkę expected_path."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            await conn.execute(
+                "UPDATE downloaded_media SET metadata_json = ?, expected_path = ? WHERE id = ?",
+                (new_metadata_json, new_expected_path, entry_id)
+            )
+            await conn.commit()
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd aktualizacji wpisu z uzupełnionymi metadanymi dla ID {entry_id}: {e}", exc_info=True)
+
+async def get_records_for_exif_writing() -> List[Dict[str, Any]]:
+    """Pobiera rekordy, których metadane należy zapisać do plików za pomocą Exiftool."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            query = """
+                SELECT final_path, metadata_json FROM downloaded_media
+                WHERE status = 'downloaded'
+                AND metadata_json IS NOT NULL AND metadata_json != '{}'
+            """
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania rekordów do zapisu EXIF: {e}", exc_info=True)
+        return []
+
+# ##############################################################################
+# ===        NOWA SEKCJA DLA MODUŁU INTEGRITY_VALIDATOR_LOGIC (FAZA 1)      ===
+# ##############################################################################
+
+async def get_downloaded_files_for_validation() -> List[Dict[str, Any]]:
+    """Pobiera z bazy listę plików o statusie 'downloaded' do weryfikacji istnienia."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            query = "SELECT id, final_path, filename FROM downloaded_media WHERE status = 'downloaded' AND final_path IS NOT NULL AND final_path != ''"
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania plików do walidacji istnienia: {e}", exc_info=True)
+        return []
+
+async def get_records_to_hash() -> List[Dict[str, Any]]:
+    """Pobiera z bazy listę plików, które nie mają jeszcze obliczonego hasha MD5."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            query = "SELECT id, final_path FROM downloaded_media WHERE status = 'downloaded' AND (file_hash IS NULL OR file_hash = '')"
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania plików do hashowania: {e}", exc_info=True)
+        return []
+
+async def update_hashes_batch(updates: List[Tuple[str, int]]):
+    """Zapisuje partię obliczonych hashy MD5 do bazy danych."""
+    await setup_database()
+    if not updates: return
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            await conn.executemany("UPDATE downloaded_media SET file_hash = ? WHERE id = ?", updates)
+            await conn.commit()
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd wsadowej aktualizacji hashy: {e}", exc_info=True)
+
+async def get_all_final_paths() -> List[Dict[str, Any]]:
+    """Pobiera wszystkie istniejące `final_path` z bazy danych."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            query = "SELECT id, final_path FROM downloaded_media WHERE final_path IS NOT NULL AND final_path != ''"
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania wszystkich final_path: {e}", exc_info=True)
+        return []
+
+async def delete_entries_by_ids(ids: List[int]):
+    """Usuwa wpisy z bazy danych na podstawie podanej listy ID."""
+    await setup_database()
+    if not ids: return
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            placeholders = ','.join(['?'] * len(ids))
+            await conn.execute(f"DELETE FROM downloaded_media WHERE id IN ({placeholders})", ids)
+            await conn.commit()
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas usuwania wpisów: {e}", exc_info=True)
+
+async def get_metadata_for_consistency_check() -> List[Dict[str, Any]]:
+    """Pobiera dane niezbędne do sprawdzenia spójności metadanych (ścieżka vs data)."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            query = """
+                SELECT id, final_path, json_extract(metadata_json, '$.DateTime') as dt_from_json
+                FROM downloaded_media
+                WHERE status = 'downloaded' AND dt_from_json IS NOT NULL AND final_path IS NOT NULL AND final_path != ''
+            """
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania danych do sprawdzenia spójności: {e}", exc_info=True)
+        return []
+
+async def get_duplicate_hashes() -> List[str]:
+    """Pobiera listę hashy MD5, które występują w bazie więcej niż raz."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            query = "SELECT file_hash FROM downloaded_media WHERE file_hash IS NOT NULL AND file_hash != '' GROUP BY file_hash HAVING COUNT(id) > 1"
+            cursor = await conn.execute(query)
+            return [row[0] for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania zduplikowanych hashy: {e}", exc_info=True)
+        return []
+
+async def get_entries_by_hash(file_hash: str) -> List[Dict[str, Any]]:
+    """Pobiera wszystkie wpisy z bazy danych pasujące do danego hasha MD5."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            query = "SELECT id, final_path, metadata_json FROM downloaded_media WHERE file_hash = ?"
+            cursor = await conn.execute(query, (file_hash,))
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania wpisów po hashu '{file_hash}': {e}", exc_info=True)
+        return []
+
+# ##############################################################################
+# ===           SEKCJA DEDYKOWANA DLA MODUŁÓW ANALITYCZNYCH                  ===
+# ##############################################################################
+
+async def get_aggregated_analytics_data() -> dict:
+    """
+    Pobiera i Agreguje dane analityczne bezpośrednio w bazie danych,
+    zwracając gotowy słownik ze statystykami.
+    """
+    await setup_database()
+    logger.info("Rozpoczynam agregację danych analitycznych w bazie danych...")
+    
+    # Definiujemy statusy, które kwalifikują plik do analizy
+    valid_statuses = ('downloaded', 'skipped', 'archived', 'scanned')
+    placeholders = ','.join('?' * len(valid_statuses))
+    
+    # Jedno, potężne zapytanie SQL, które wykonuje wszystkie obliczenia
+    query = f"""
+        SELECT
+            COUNT(id) as total_files,
+            SUM(CAST(json_extract(metadata_json, '$.size') AS INTEGER)) as total_size_bytes,
+            MIN(json_extract(metadata_json, '$.DateTime')) as oldest_date,
+            MAX(json_extract(metadata_json, '$.DateTime')) as newest_date,
+            STRFTIME('%Y', json_extract(metadata_json, '$.DateTime')) as year,
+            COUNT(id) as year_count,
+            SUM(CAST(json_extract(metadata_json, '$.size') AS INTEGER)) as year_size
+        FROM downloaded_media
+        WHERE
+            status IN ({placeholders})
+            AND json_valid(metadata_json) = 1
+            AND json_extract(metadata_json, '$.DateTime') IS NOT NULL
+        GROUP BY
+            year
+    """
+    
+    # Dodatkowe zapytania, których nie da się łatwo połączyć
+    camera_query = "SELECT json_extract(metadata_json, '$.Camera') as camera, COUNT(id) as count FROM downloaded_media WHERE camera IS NOT NULL GROUP BY camera ORDER BY count DESC LIMIT 15"
+    
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            
+            # Wykonaj główne zapytanie
+            main_cursor = await conn.execute(query, valid_statuses)
+            rows = await main_cursor.fetchall()
+            
+            # Wykonaj zapytanie o aparaty
+            camera_cursor = await conn.execute(camera_query)
+            camera_rows = await camera_cursor.fetchall()
+
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas agregacji danych analitycznych: {e}", exc_info=True)
+        return {}
+
+    # Przetwarzamy wyniki w Pythonie do finalnej, czystej formy
+    if not rows:
+        return {}
+
+    overall_stats = {
+        "total_files": sum(r['year_count'] for r in rows),
+        "total_size_bytes": sum(r['year_size'] for r in rows),
+        "oldest_date": min(r['oldest_date'] for r in rows),
+        "newest_date": max(r['newest_date'] for r in rows),
+    }
+
+    yearly_data = {
+        r['year']: {'count': r['year_count'], 'size': r['year_size']}
+        for r in rows if r['year']
+    }
+    
+    camera_data = [(r['camera'], r['count']) for r in camera_rows]
+
+    # Zwracamy jeden, kompletny słownik z gotowymi danymi
+    return {
+        "overall": overall_stats,
+        "yearly": yearly_data,
+        "cameras": camera_data
+    }
+
+async def get_all_db_records_for_takeout_import() -> List[Dict[str, Any]]:
+    """Pobiera podstawowe dane (id, filename, metadata_json) dla wszystkich rekordów."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            cursor = await conn.execute("SELECT id, filename, metadata_json FROM downloaded_media")
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania rekordów dla importu z Takeout: {e}", exc_info=True)
+        return []
+
+async def update_takeout_metadata_batch(updates: List[Tuple[str, Optional[str], int]]):
+    """Zapisuje partię zaktualizowanych metadanych i URL z Takeout do bazy."""
+    await setup_database()
+    if not updates: return
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            await conn.executemany(
+                "UPDATE downloaded_media SET metadata_json = ?, google_photos_url = ? WHERE id = ?",
+                updates
+            )
+            await conn.commit()
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd wsadowej aktualizacji metadanych z Takeout: {e}", exc_info=True)
+
+async def get_all_filenames_from_db() -> set:
+    """Pobiera zbiór wszystkich nazw plików (filename) z bazy danych."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            cursor = await conn.execute("SELECT filename FROM downloaded_media WHERE filename IS NOT NULL")
+            return {row[0] for row in await cursor.fetchall()}
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania nazw plików z bazy: {e}", exc_info=True)
+        return set()
+
+async def get_image_paths_for_analysis_old(extensions: tuple) -> List[Path]:
+    """Pobiera ścieżki do plików pasujących do podanych rozszerzeń."""
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            placeholders = ','.join('?' * len(extensions))
+            query = f"""
+                SELECT final_path FROM downloaded_media
+                WHERE status = 'downloaded' AND final_path IS NOT NULL
+                AND SUBSTR(LOWER(final_path), -LENGTH(final_path) + INSTR(LOWER(final_path), '.')) IN ({placeholders})
+            """
+            cursor = await conn.execute(query, extensions)
+            return [Path(row[0]) for row in await cursor.fetchall() if row[0] and Path(row[0]).exists()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania ścieżek do analizy obrazów: {e}", exc_info=True)
+        return []
+
+async def get_images_without_perceptual_hash() -> List[Dict[str, Any]]:
+    """
+    Pobiera z bazy listę obrazów o statusie 'downloaded', które nie mają
+    jeszcze obliczonego hasha percepcyjnego (pHash).
+
+    Zwraca listę słowników zawierających 'id' i 'final_path' każdego obrazu.
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            # Zapytanie wybiera tylko pliki graficzne, które zostały pobrane
+            # i nie mają jeszcze przypisanego hasha percepcyjnego.
+            query = """
+                SELECT id, final_path FROM downloaded_media 
+                WHERE (perceptual_hash IS NULL OR perceptual_hash = '') AND status = 'downloaded'
+                AND (LOWER(final_path) LIKE '%.jpg' OR LOWER(final_path) LIKE '%.jpeg' OR LOWER(final_path) LIKE '%.png')
+            """
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas pobierania obrazów bez hasha percepcyjnego: {e}", exc_info=True)
+        return []
+
+async def update_perceptual_hash_batch(updates: List[Tuple[str, int]]):
+    """
+    Zapisuje partię obliczonych hashy percepcyjnych (pHash) do bazy danych.
+
+    Przyjmuje listę krotek, gdzie każda krotka zawiera (perceptual_hash, id).
+    """
+    await setup_database()
+    if not updates:
+        return
+    
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            await conn.executemany(
+                "UPDATE downloaded_media SET perceptual_hash = ? WHERE id = ?",
+                updates
+            )
+            await conn.commit()
+            logger.info(f"Zapisano partię {len(updates)} hashy percepcyjnych do bazy danych.")
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas wsadowej aktualizacji hashy percepcyjnych: {e}", exc_info=True)
+
+async def get_all_perceptual_hashes() -> List[Dict[str, Any]]:
+    """
+    Pobiera wszystkie obliczone hashe percepcyjne (pHash) z bazy danych.
+
+    Zwraca listę słowników, gdzie każdy słownik zawiera kluczowe informacje
+    potrzebne do algorytmu porównawczego, w tym sparsowany obiekt `imagehash`.
+    """
+    await setup_database()
+    
+    # Import jest tutaj, aby uniknąć zależności na poziomie modułu, jeśli biblioteka nie jest zainstalowana
+    try:
+        import imagehash
+    except ImportError:
+        logger.error("Biblioteka 'imagehash' nie jest zainstalowana. Nie można przetworzyć hashy.")
+        return []
+        
+    all_hashes_list = []
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            # Zapytanie pobiera wszystkie niezbędne dane dla każdego pliku, który posiada pHash
+            query = """
+                SELECT id, url, final_path, perceptual_hash, json_extract(metadata_json, '$.DateTime') as dt_str 
+                FROM downloaded_media 
+                WHERE perceptual_hash IS NOT NULL AND perceptual_hash != '' AND status = 'downloaded'
+            """
+            cursor = await conn.execute(query)
+            async for rec in cursor:
+                try:
+                    # Konwertujemy string z bazy z powrotem na obiekt imagehash
+                    # oraz parsujemy datę, co jest kluczowe dla optymalizacji szybkiego skanu
+                    all_hashes_list.append({
+                        "id": rec['id'],
+                        "url": rec['url'],
+                        "path": Path(rec['final_path']),
+                        "hash": imagehash.hex_to_hash(rec['perceptual_hash']),
+                        "datetime": datetime.fromisoformat(rec['dt_str'].replace('Z', '+00:00')) if rec['dt_str'] else None
+                    })
+                except (ValueError, TypeError, KeyError) as e:
+                    logger.warning(f"Pominięto rekord z nieprawidłowym hashem lub datą dla ID {rec['id']}: {e}")
+                    continue
+        return all_hashes_list
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas pobierania hashy percepcyjnych z bazy: {e}", exc_info=True)
+        return []
+
+async def get_metadata_for_display(entry_id: int, file_path: Path) -> Dict[str, str]:
+    """
+    Pobiera metadane dla pojedynczego wpisu i parsuje je do formatu
+    przyjaznego do wyświetlania w interfejsie użytkownika.
+
+    Args:
+        entry_id (int): ID wpisu w bazie danych.
+        file_path (Path): Ścieżka do pliku na dysku (do weryfikacji rozmiaru).
+
+    Returns:
+        Dict[str, str]: Słownik z czytelnymi, sformatowanymi metadanymi.
+    """
+    await setup_database()
+    
+    # Import jest tutaj, aby uniknąć problemów z cyklicznymi zależnościami
+    from .utils import format_size_for_display
+
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            cursor = await conn.execute(
+                "SELECT metadata_json FROM downloaded_media WHERE id = ?",
+                (entry_id,)
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return {}
+
+        metadata = json.loads(row[0] or '{}')
+
+        # Logika parsowania, przeniesiona i zaadaptowana z utils._parse_metadata_for_display
+        date_tags = ['EXIF:DateTimeOriginal', 'EXIF:CreateDate', 'QuickTime:CreateDate', 'DateTime', 'XMP:CreateDate', 'File:FileModifyDate']
+        date_str = "Brak"
+        for tag in date_tags:
+            if tag in metadata:
+                date_str = str(metadata[tag]).split('+')[0].strip()
+                break
+        
+        dimensions_str = metadata.get('File:ImageSize') or \
+                         (f"{metadata.get('EXIF:ImageWidth')}x{metadata.get('EXIF:ImageHeight')}" if 'EXIF:ImageWidth' in metadata else "Brak")
+        
+        size_str = "Brak pliku"
+        try:
+            if await asyncio.to_thread(file_path.exists):
+                size_bytes = (await asyncio.to_thread(file_path.stat)).st_size
+                size_str = format_size_for_display(size_bytes)
+        except (OSError, FileNotFoundError):
+            pass
+
+        file_type = metadata.get('File:FileType', "Brak")
+        camera_model = metadata.get('EXIF:Model') or metadata.get('Camera', "Brak")
+        
+        f_number = metadata.get('EXIF:FNumber')
+        exposure_time = metadata.get('EXIF:ExposureTime')
+        iso = metadata.get('EXIF:ISO')
+        exposure_str = f"f/{f_number}, {exposure_time}s, ISO {iso}" if all([f_number, exposure_time, iso]) else "Brak"
+        
+        lat = metadata.get('EXIF:GPSLatitude')
+        lon = metadata.get('EXIF:GPSLongitude')
+        gps_str = f"{lat}, {lon}" if all([lat, lon]) else "Brak"
+
+        return {
+            "date": date_str,
+            "dimensions": dimensions_str,
+            "size": size_str,
+            "type": file_type,
+            "camera": camera_model,
+            "exposure": exposure_str,
+            "gps": gps_str
+        }
+
+    except (aiosqlite.Error, json.JSONDecodeError, KeyError) as e:
+        logger.error(f"Błąd podczas pobierania metadanych do wyświetlenia dla ID {entry_id}: {e}", exc_info=True)
+        return {}
+
+async def get_images_to_tag() -> List[Dict[str, Any]]:
+    """
+    Pobiera z bazy listę obrazów, które są gotowe do przetworzenia przez
+    moduł inteligentnego tagowania (AI Tagger).
+
+    Szuka plików o statusie 'downloaded', które nie mają jeszcze przypisanych
+    tagów AI.
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            # Zapytanie wybiera pobrane pliki (JPG, JPEG, PNG), które nie mają jeszcze tagów AI.
+            query = """
+                SELECT id, final_path FROM downloaded_media 
+                WHERE status = 'downloaded' 
+                AND (ai_tags IS NULL OR ai_tags = '' OR ai_tags = '[]')
+                AND (LOWER(final_path) LIKE '%.jpg' OR LOWER(final_path) LIKE '%.jpeg' OR LOWER(final_path) LIKE '%.png')
+            """
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas pobierania obrazów do tagowania AI: {e}", exc_info=True)
+        return []
+
+async def update_ai_tags_batch(updates: List[Tuple[str, int]]):
+    """
+    Zapisuje partię tagów AI (jako string JSON) do bazy danych.
+
+    Przyjmuje listę krotek, gdzie każda krotka zawiera (ai_tags_json, id).
+    """
+    await setup_database()
+    if not updates:
+        return
+    
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            await conn.executemany(
+                "UPDATE downloaded_media SET ai_tags = ? WHERE id = ?",
+                updates
+            )
+            await conn.commit()
+            logger.info(f"Zapisano partię {len(updates)} tagów AI do bazy danych.")
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas wsadowej aktualizacji tagów AI: {e}", exc_info=True)
+
+async def get_raw_media_entries_for_analysis() -> list[dict]:
+    """
+    Pobiera surowe dane z bazy, niezbędne do działania wszystkich modułów analitycznych.
+    Zwraca listę słowników z kluczami: id, metadata_json, final_path.
+
+    UWAGA: Ta funkcja wczytuje wszystkie dane do pamięci i jest przeznaczona
+    dla narzędzi wymagających dostępu do każdego rekordu (np. Eksploratory).
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            # Definiujemy statusy, które kwalifikują plik do analizy
+            valid_statuses = ['downloaded', 'skipped', 'archived', 'scanned']
+            placeholders = ','.join(['?'] * len(valid_statuses))
+            
+            query = f"""
+                SELECT id, metadata_json, final_path FROM downloaded_media
+                WHERE status IN ({placeholders}) AND json_valid(metadata_json) = 1
+            """
+            cursor = await conn.execute(query, valid_statuses)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas pobierania surowych danych do analizy: {e}", exc_info=True)
+        return []
+
+async def clear_all_perceptual_hashes() -> int:
+    """
+    Czyści (ustawia na NULL) wszystkie istniejące hashe percepcyjne w bazie danych.
+
+    Returns:
+        int: Liczba zaktualizowanych wierszy.
+    """
+    await setup_database()
+    logger.info("Rozpoczynam czyszczenie wszystkich hashy percepcyjnych w bazie danych...")
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            cursor = await conn.execute("UPDATE downloaded_media SET perceptual_hash = NULL WHERE perceptual_hash IS NOT NULL")
+            await conn.commit()
+            logger.info(f"Pomyślnie wyczyszczono {cursor.rowcount} hashy percepcyjnych.")
+            return cursor.rowcount
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas czyszczenia hashy percepcyjnych: {e}", exc_info=True)
+        return 0
+
+
+async def get_all_images_for_phash_recalculation() -> list[dict]:
+    """
+    Pobiera z bazy listę WSZYSTKICH obrazów o statusie 'downloaded',
+    które nadają się do obliczenia hasha percepcyjnego, ignorując istniejące hashe.
+
+    Zwraca listę słowników zawierających 'id' i 'final_path' każdego obrazu.
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            query = """
+                SELECT id, final_path FROM downloaded_media 
+                WHERE status = 'downloaded'
+                AND (LOWER(final_path) LIKE '%.jpg' OR LOWER(final_path) LIKE '%.jpeg' OR LOWER(final_path) LIKE '%.png')
+            """
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas pobierania wszystkich obrazów do ponownego hashowania: {e}", exc_info=True)
+        return []
+
+async def get_imported_images_without_perceptual_hash() -> list[dict]:
+    """
+    Pobiera z bazy listę obrazów zaimportowanych z dysku (`local_import`),
+    które nie mają jeszcze obliczonego hasha percepcyjnego (pHash).
+
+    Zwraca listę słowników zawierających 'id' i 'final_path' każdego obrazu.
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            # To zapytanie jest dedykowane tylko dla plików importowanych z dysku.
+            query = """
+                SELECT id, final_path FROM downloaded_media 
+                WHERE (perceptual_hash IS NULL OR perceptual_hash = '')
+                AND source = 'local_import'
+                AND (LOWER(final_path) LIKE '%.jpg' OR LOWER(final_path) LIKE '%.jpeg' OR LOWER(final_path) LIKE '%.png')
+            """
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas pobierania importowanych obrazów bez hasha percepcyjnego: {e}", exc_info=True)
+        return []
+
+async def get_imported_image_paths_for_analysis(extensions: tuple) -> list[Path]:
+    """
+    Pobiera ścieżki do plików zaimportowanych z dysku (`local_import`),
+    które pasują do podanych rozszerzeń.
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            # Tworzymy listę zapytań dla każdego rozszerzenia
+            extension_queries = [f"LOWER(final_path) LIKE '%.{ext.strip('.')}'" for ext in extensions]
+            
+            query = f"""
+                SELECT final_path FROM downloaded_media
+                WHERE source = 'local_import' AND final_path IS NOT NULL
+                AND ({' OR '.join(extension_queries)})
+            """
+            cursor = await conn.execute(query)
+            # Zwracamy listę obiektów Path, upewniając się, że pliki istnieją
+            return [Path(row[0]) for row in await cursor.fetchall() if row[0] and Path(row[0]).exists()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania ścieżek do analizy obrazów importowanych: {e}", exc_info=True)
+        return []
+
+async def get_local_import_entries() -> list[dict]:
+    """
+    Pobiera wszystkie wpisy z bazy danych, które zostały zaimportowane z dysku lokalnego.
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            query = "SELECT id, url, final_path FROM downloaded_media WHERE source = 'local_import'"
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas pobierania wpisów importowanych lokalnie: {e}", exc_info=True)
+        return []
+
+async def update_paths_for_entry(entry_id: int, new_path: str):
+    """
+    Aktualizuje `final_path` i `expected_path` dla pojedynczego wpisu w bazie danych.
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            await conn.execute(
+                "UPDATE downloaded_media SET final_path = ?, expected_path = ? WHERE id = ?",
+                (new_path, new_path, entry_id)
+            )
+            await conn.commit()
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd aktualizacji ścieżek dla ID {entry_id}: {e}", exc_info=True)
+
+async def get_downloaded_entries_for_path_fixing() -> list[dict]:
+    """
+    Pobiera wszystkie wpisy z bazy, które pochodzą z pobierania (nie z importu lokalnego)
+    i posiadają ścieżki do weryfikacji przez path_fix_tool.
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            # KLUCZOWA ZMIANA: Dodajemy warunek, aby ignorować pliki importowane lokalnie.
+            query = """
+                SELECT id, final_path, expected_path FROM downloaded_media
+                WHERE (source IS NULL OR source != 'local_import')
+                AND final_path IS NOT NULL AND final_path != ''
+            """
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas pobierania wpisów do naprawy ścieżek: {e}", exc_info=True)
+        return []
+
+async def update_paths_for_entry_by_id(entry_id: int, new_final_path: str, new_expected_path: str):
+    """
+    Aktualizuje `final_path` i `expected_path` dla pojedynczego wpisu w bazie danych.
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            await conn.execute(
+                "UPDATE downloaded_media SET final_path = ?, expected_path = ? WHERE id = ?",
+                (new_final_path, new_expected_path, entry_id)
+            )
+            await conn.commit()
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd aktualizacji ścieżek dla ID {entry_id}: {e}", exc_info=True)
+
+# W pliku: core/database.py
+# ZASTĄP starą funkcję `get_image_paths_for_analysis` i USUŃ `get_imported_image_paths_for_analysis`
+
+async def get_image_paths_for_analysis_old(extensions: tuple, source_filter: str = 'downloaded') -> list[Path]:
+    """
+    Pobiera ścieżki do plików pasujących do podanych rozszerzeń,
+    z możliwością filtrowania według źródła pliku.
+
+    Args:
+        extensions (tuple): Krotka z rozszerzeniami plików do wyszukania (np. ('.jpg', '.png')).
+        source_filter (str): Filtr źródła:
+                             - 'downloaded': Zwraca tylko pliki pobrane z Google Photos.
+                             - 'local_import': Zwraca tylko pliki importowane z dysku.
+                             - 'all': Zwraca wszystkie pliki, niezależnie od źródła.
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            # Budujemy warunek na podstawie rozszerzeń
+            extension_queries = [f"LOWER(final_path) LIKE '%.{ext.strip('.')}'" for ext in extensions]
+            
+            # Budujemy główną kwerendę
+            query = f"""
+                SELECT final_path FROM downloaded_media
+                WHERE final_path IS NOT NULL AND ({' OR '.join(extension_queries)})
+            """
+            
+            # Dodajemy warunek na źródło pliku
+            if source_filter == 'downloaded':
+                query += " AND (source IS NULL OR source = 'google_photos')"
+            elif source_filter == 'local_import':
+                query += " AND source = 'local_import'"
+            # Dla 'all' nie dodajemy żadnego dodatkowego warunku na źródło
+
+            cursor = await conn.execute(query)
+            # Zwracamy listę obiektów Path, upewniając się, że pliki istnieją
+            return [Path(row[0]) for row in await cursor.fetchall() if row[0] and Path(row[0]).exists()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania ścieżek do analizy obrazów: {e}", exc_info=True)
+        return []
+
+async def get_image_paths_for_analysis(extensions: tuple, source_filter: str = 'downloaded') -> list[Path]:
+    """
+    Pobiera ścieżki do plików pasujących do podanych rozszerzeń,
+    z możliwością filtrowania według źródła pliku.
+
+    Args:
+        extensions (tuple): Krotka z rozszerzeniami plików do wyszukania (np. ('.jpg', '.png')).
+        source_filter (str): Filtr źródła:
+                             - 'downloaded': Zwraca tylko pliki pobrane z Google Photos.
+                             - 'local_import': Zwraca tylko pliki importowane z dysku.
+                             - 'all': Zwraca wszystkie pliki, niezależnie od źródła.
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            # Budujemy warunek na podstawie rozszerzeń
+            extension_queries = [f"LOWER(final_path) LIKE '%.{ext.strip('.')}'" for ext in extensions]
+            
+            # Budujemy główną kwerendę
+            query = f"""
+                SELECT final_path FROM downloaded_media
+                WHERE final_path IS NOT NULL AND ({' OR '.join(extension_queries)})
+            """
+            
+            # Dodajemy warunek na źródło pliku
+            if source_filter == 'downloaded':
+                query += " AND (source IS NULL OR source = 'google_photos')"
+            elif source_filter == 'local_import':
+                query += " AND source = 'local_import'"
+            # Dla 'all' nie dodajemy żadnego dodatkowego warunku na źródło
+
+            cursor = await conn.execute(query)
+            # Zwracamy listę obiektów Path, upewniając się, że pliki istnieją
+            return [Path(row[0]) for row in await cursor.fetchall() if row[0] and Path(row[0]).exists()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd pobierania ścieżek do analizy obrazów: {e}", exc_info=True)
+        return []
+
+async def get_downloaded_entries_for_path_fixing() -> list[dict]:
+    """
+    Pobiera wszystkie wpisy z bazy, które pochodzą z pobierania (nie z importu lokalnego)
+    i posiadają ścieżki do weryfikacji przez path_fix_tool.
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            conn.row_factory = aiosqlite.Row
+            # KLUCZOWA ZMIANA: Dodajemy warunek, aby ignorować pliki importowane lokalnie.
+            query = """
+                SELECT id, final_path, expected_path FROM downloaded_media
+                WHERE (source IS NULL OR source != 'local_import')
+                AND final_path IS NOT NULL AND final_path != ''
+            """
+            cursor = await conn.execute(query)
+            return [dict(row) for row in await cursor.fetchall()]
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd podczas pobierania wpisów do naprawy ścieżek: {e}", exc_info=True)
+        return []
+
+async def update_paths_for_entry_by_id(entry_id: int, new_final_path: str, new_expected_path: str):
+    """
+    Aktualizuje `final_path` i `expected_path` dla pojedynczego wpisu w bazie danych.
+    """
+    await setup_database()
+    try:
+        async with aiosqlite.connect(DATABASE_FILE) as conn:
+            await conn.execute(
+                "UPDATE downloaded_media SET final_path = ?, expected_path = ? WHERE id = ?",
+                (new_final_path, new_expected_path, entry_id)
+            )
+            await conn.commit()
+    except aiosqlite.Error as e:
+        logger.error(f"Błąd aktualizacji ścieżek dla ID {entry_id}: {e}", exc_info=True)

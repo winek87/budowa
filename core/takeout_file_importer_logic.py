@@ -20,7 +20,6 @@
 ################################################################################
 
 # --- GŁÓWNE IMPORTY ---
-import asyncio
 import json
 import logging
 import shutil
@@ -36,8 +35,7 @@ from rich.prompt import Confirm, Prompt
 from rich.progress import Progress
 
 # --- IMPORTY Z WŁASNYCH MODUŁÓW ---
-from .config import DATABASE_FILE, DOWNLOADS_DIR_BASE
-from .database import add_local_file_entry # Używamy tej funkcji do dodawania wpisów
+from .database import add_local_file_entry, get_all_filenames_from_db
 from .utils import get_date_from_metadata, create_unique_filepath
 # Importujemy sprawdzoną funkcję do parsowania nazw plików .json
 from .takeout_importer_logic import _get_original_filename
@@ -80,9 +78,8 @@ async def _perform_file_import(photos_path: Path):
 
         # --- Krok 2: Pobierz listę istniejących plików z bazy danych ---
         with console.status("[cyan]Pobieranie listy istniejących plików z bazy danych...[/]"):
-            async with aiosqlite.connect(DATABASE_FILE) as conn:
-                cursor = await conn.execute("SELECT filename FROM downloaded_media WHERE filename IS NOT NULL")
-                existing_filenames = {row[0] for row in await cursor.fetchall()}
+            # Użycie scentralizowanej funkcji
+            existing_filenames = await get_all_filenames_from_db()
         logger.info(f"Znaleziono {len(existing_filenames)} istniejących plików w lokalnej bazie danych.")
 
         # --- Krok 3: Zidentyfikuj pliki, których brakuje w lokalnej kolekcji ---
@@ -158,6 +155,7 @@ async def _perform_file_import(photos_path: Path):
     except Exception as e:
         logger.critical("Wystąpił nieoczekiwany, krytyczny błąd w Importerze Plików z Takeout.", exc_info=True)
         console.print(f"\n[bold red]Wystąpił krytyczny błąd. Sprawdź plik logu.[/bold red]")
+
 
 async def run_takeout_file_importer():
     """

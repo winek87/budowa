@@ -32,8 +32,7 @@ from rich.prompt import Prompt
 from rich.progress import Progress
 
 # --- IMPORTY Z WŁASNYCH MODUŁÓW ---
-from .config import DATABASE_FILE
-
+from .database import get_all_db_records_for_takeout_import, update_takeout_metadata_batch
 # --- Inicjalizacja i Konfiguracja Modułu ---
 console = Console(record=True)
 logger = logging.getLogger(__name__)
@@ -104,11 +103,8 @@ async def _process_takeout_folder(photos_path: Path) -> None:
 
         # --- Krok 2: Pobierz rekordy z bazy ---
         with console.status("[cyan]Pobieranie rekordów z lokalnej bazy danych...[/]"):
-            async with aiosqlite.connect(DATABASE_FILE) as conn:
-                conn.row_factory = aiosqlite.Row
-                query = "SELECT id, filename, metadata_json FROM downloaded_media"
-                cursor = await conn.execute(query)
-                db_records = await cursor.fetchall()
+            # Użycie scentralizowanej funkcji
+            db_records = await get_all_db_records_for_takeout_import()
         logger.info("Pobrano %d rekordów z lokalnej bazy do porównania.", len(db_records))
 
         # --- Krok 3: Porównaj dane i przygotuj aktualizacje ---
@@ -137,11 +133,8 @@ async def _process_takeout_folder(photos_path: Path) -> None:
                         if ts := takeout_meta.get('photoTakenTime', {}).get('timestamp'):
                             merged_meta['Timestamp_Takeout'] = datetime.fromtimestamp(int(ts)).isoformat()
                         
-                        # --- POCZĄTEK ZMIAN: Odczyt i dodanie URL-a ---
                         takeout_url = takeout_meta.get("url")
                         updates_batch.append((json.dumps(merged_meta), takeout_url, record['id']))
-                        # --- KONIEC ZMIAN ---
-
                         logger.debug("Przygotowano aktualizację dla pliku: %s", filename)
                     except (json.JSONDecodeError, KeyError, OSError) as e:
                         logger.warning("Nie udało się przetworzyć pliku .json '%s' dla '%s': %s", json_to_process_path.name, filename, e)
@@ -154,12 +147,8 @@ async def _process_takeout_folder(photos_path: Path) -> None:
         # --- Krok 4: Zapisz zmiany w bazie danych ---
         if updates_batch:
             with console.status(f"[cyan]Zapisywanie {updated_count} aktualizacji w bazie danych...[/]"):
-                async with aiosqlite.connect(DATABASE_FILE) as conn:
-                    # --- POCZĄTEK ZMIAN: Zaktualizowane zapytanie UPDATE ---
-                    update_query = "UPDATE downloaded_media SET metadata_json = ?, google_photos_url = ? WHERE id = ?"
-                    await conn.executemany(update_query, updates_batch)
-                    # --- KONIEC ZMIAN ---
-                    await conn.commit()
+                # Użycie scentralizowanej funkcji
+                await update_takeout_metadata_batch(updates_batch)
             logger.info("Pomyślnie zaktualizowano %d rekordów w bazie danych.", updated_count)
             console.print(f"\n[bold green]✅ Sukces! Zaktualizowano metadane dla {updated_count} plików.[/bold green]")
         else:

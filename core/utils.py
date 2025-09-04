@@ -51,6 +51,7 @@ from rich.text import Text
 from rich.live import Live
 from rich.align import Align
 from rich.table import Table
+from rich.layout import Layout
 
 # --- IMPORTY Z WŁASNYCH MODUŁÓW ---
 from .config import ENABLE_HEADLESS_CURSOR, DOWNLOADS_DIR_BASE, IMAGE_VIEWER_MODE
@@ -174,30 +175,7 @@ def _open_with_system_viewer(path: Path):
     except Exception as e:
         logger.error(f"Nie udało się otworzyć pliku: {e}", exc_info=True)
         console.print(f"[bold red]Błąd: Wystąpił nieoczekiwany problem z otwarciem przeglądarki systemowej.[/bold red]")
-####
-def _open_with_system_viewer_bak(path: Path):
-    """Metoda 1: Używa domyślnej przeglądarki systemowej (np. xdg-open)."""
-    logger.info(f"Próba otwarcia pliku '{path.name}' za pomocą przeglądarki systemowej...")
-    try:
-        if platform.system() == "Windows":
-            os.startfile(path)
-        elif platform.system() == "Darwin":
-            subprocess.run(["open", path], check=True)
-        else: # Linux i inne
-            subprocess.run(["xdg-open", path], check=True, capture_output=True)
-        console.print(f"[green]Wysłano polecenie otwarcia pliku [cyan]{path.name}[/cyan]. Sprawdź okna na swoim pulpicie.[/green]")
-    except FileNotFoundError:
-        logger.error("Polecenie 'xdg-open' (lub 'open'/'startfile') nie zostało znalezione.")
-        console.print(f"[bold red]Błąd: Nie znaleziono polecenia do otwierania plików dla Twojego systemu.[/bold red]")
-    except subprocess.CalledProcessError as e:
-        logger.error(f"xdg-open nie mogło otworzyć pliku {path.name}. stderr: {e.stderr.decode('utf-8', 'ignore').strip()}")
-        console.print(f"\n[bold yellow]Ostrzeżenie:[/] Nie udało się otworzyć pliku za pomocą przeglądarki systemowej.")
-        console.print(f"[dim]Prawdopodobnie pracujesz w sesji SSH bez przekierowania X11 (użyj 'ssh -Y').[/dim]")
-        console.print(f"[dim]Możesz zmienić tryb wyświetlania w 'core/config.py' na 'server'.[/dim]")
-    except Exception as e:
-        logger.error(f"Nie udało się otworzyć pliku: {e}", exc_info=True)
-        console.print(f"[bold red]Błąd: Wystąpił nieoczekiwany problem z otwarciem przeglądarki systemowej.[/bold red]")
-###
+
 def _open_with_eog_unsafe(path: Path):
     """
     Metoda 4 (specjalna): Uruchamia przeglądarkę 'eog' z flagą --no-sandbox.
@@ -283,19 +261,7 @@ def _open_with_sixel(path: Path):
     except Exception as e:
         logger.error(f"Błąd podczas wyświetlania obrazu w terminalu: {e}", exc_info=True)
         console.print(f"[red]Nie udało się wyświetlić obrazu. Upewnij się, że Twój terminal (np. Kitty, iTerm2) to obsługuje.[/red]")
-#####
-def _open_with_sixel_bak(path: Path):
-    """Metoda 3: Próbuje wyświetlić obraz bezpośrednio w terminalu."""
-    logger.info(f"Próba wyświetlenia obrazu '{path.name}' w terminalu...")
-    if not check_dependency("term_image", "term-image", "term-image (do podglądu w terminalu)"):
-        return
-    import term_image
-    try:
-        term_image.show(str(path))
-    except Exception as e:
-        logger.error(f"Błąd podczas wyświetlania obrazu w terminalu: {e}", exc_info=True)
-        console.print(f"[red]Nie udało się wyświetlić obrazu. Upewnij się, że Twój terminal to obsługuje.[/red]")
-####
+
 def open_image_viewer(path: Path):
     """
     Główna funkcja-dyspozytor do otwierania obrazów.
@@ -318,23 +284,10 @@ def open_image_viewer(path: Path):
         _open_with_web_server(path)
     elif IMAGE_VIEWER_MODE == 'sixel':
         _open_with_sixel(path)
-    # --- POCZĄTEK ZMIANY ---
     elif IMAGE_VIEWER_MODE == 'eog-unsafe':
         _open_with_eog_unsafe(path)
-    # --- KONIEC ZMIANY ---
     else:  # 'system' jest domyślny
         _open_with_system_viewer(path)
-
-#def open_image_viewer(path: Path):
-#    """Główna funkcja-dyspozytor do otwierania obrazów."""
-#    if not path.exists():
-#        logger.error(f"Próba otwarcia nieistniejącego pliku: {path}")
-#        console.print(f"[bold red]Błąd: Plik '{path}' nie istnieje na dysku.[/bold red]")
-#        return
-#    
-#    if IMAGE_VIEWER_MODE == 'server': _open_with_web_server(path)
-#    elif IMAGE_VIEWER_MODE == 'sixel': _open_with_sixel(path)
-#    else: _open_with_system_viewer(path)
 
 # ##############################################################################
 # ===                    SEKCJA 5: PRZETWARZANIE DANYCH I PLIKÓW             ===
@@ -374,8 +327,22 @@ def _parse_metadata_for_display(metadata: dict, file_path: Path) -> dict:
     exposure_str = f"f/{f_number}, {exposure_time}s, ISO {iso}" if all([f_number, exposure_time, iso]) else "Brak"
     lat, lon = metadata.get('EXIF:GPSLatitude'), metadata.get('EXIF:GPSLongitude'); gps_str = f"{lat}, {lon}" if all([lat, lon]) else "Brak"
     return {"date": date_str, "dimensions": dimensions_str, "size": size_str, "type": file_type, "camera": camera_model, "exposure": exposure_str, "gps": gps_str}
+# ##############################################################################
 
-def format_size_for_display(size_bytes: int | None) -> str:
+def format_size_for_display(size_bytes: int) -> str:
+    """Konwertuje rozmiar w bajtach na czytelny format (KB, MB, GB)."""
+    if size_bytes is None or not isinstance(size_bytes, (int, float)):
+        return "B/D" # POPRAWKA: Zwraca "B/D" (Brak Danych)
+    if size_bytes == 0:
+        return "0.0 B" # POPRAWKA: Zwraca z jednym miejscem po przecinku
+    size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
+    i = int(math.floor(math.log(size_bytes, 1024)))
+    p = math.pow(1024, i)
+    s = round(size_bytes / p, 1) # POPRAWKA: Zaokrągla do 1 miejsca
+    return f"{s:.1f} {size_name[i]}" # POPRAWKA: Formatowanie do 1 miejsca
+
+# ##############################################################################
+def format_size_for_display_old(size_bytes: int | None) -> str:
     if size_bytes is None: return "Brak"
     if not isinstance(size_bytes, (int, float)) or size_bytes < 0: return "Błąd"
     if size_bytes == 0: return "0.00 KB"
@@ -384,11 +351,81 @@ def format_size_for_display(size_bytes: int | None) -> str:
     power = min(power, len(size_units) - 1)
     value_in_unit = size_bytes / (1024 ** power); unit = size_units[power]
     return f"{value_in_unit:.2f} {unit}"
-
+# ##############################################################################
 # ##############################################################################
 # ===                  SEKCJA 6: UNIWERSALNE KOMPONENTY UI                   ===
 # ##############################################################################
-async def _interactive_file_selector(all_files: List[Path], title: str) -> List[Path]:
+async def _interactive_file_selector(items: list, title: str) -> list:
+    """
+    Uniwersalny, interaktywny selektor listy elementów (plików lub stringów),
+    pozwalający na wielokrotny wybór.
+    """
+    if not items:
+        return []
+
+    selected_indices = set()
+    current_index = 0
+
+    def generate_layout() -> Layout:
+        """Wewnętrzna funkcja renderująca interfejs listy."""
+        table = Table(show_header=False, box=None, padding=(0, 1))
+        table.add_column(width=4)  # Na checkbox i strzałkę
+        table.add_column()
+
+        # Dynamicznie dostosuj widoczny fragment listy
+        start_index = max(0, current_index - 10)
+        end_index = min(len(items), start_index + 20)
+        
+        for i in range(start_index, end_index):
+            item = items[i]
+            # Sprawdzamy, czy element jest obiektem Path, aby poprawnie wyświetlić nazwę
+            display_name = item.name if isinstance(item, Path) else str(item)
+            
+            cursor = "»" if i == current_index else " "
+            checkbox = "[bold green]✓[/]" if i in selected_indices else "[dim]o[/]"
+            
+            style = "bold black on white" if i == current_index else ("bold green" if i in selected_indices else "")
+            table.add_row(f"{cursor} {checkbox}", Text(display_name, style=style))
+
+        footer_text = (
+            "[bold]G/D[/](nawigacja) • [bold]SPACJA[/](zaznacz) • "
+            "[bold]A[/](zaznacz wszystko) • [bold]N[/](odznacz wszystko) • "
+            "[bold]ENTER[/](zatwierdź) • [bold]Q[/](anuluj)"
+        )
+        
+        layout = Layout()
+        layout.split_column(
+            Layout(Panel(table, title=f"{title} ({len(selected_indices)}/{len(items)})"), name="main"),
+            Layout(Align.center(Text(footer_text)), name="footer", size=1)
+        )
+        return layout
+
+    with Live(generate_layout(), screen=True, auto_refresh=False, transient=True) as live:
+        while True:
+            live.update(generate_layout(), refresh=True)
+            key = await asyncio.to_thread(get_key)
+            if not key:
+                continue
+
+            if key == "UP":
+                current_index = (current_index - 1 + len(items)) % len(items)
+            elif key == "DOWN":
+                current_index = (current_index + 1) % len(items)
+            elif key == ' ':
+                if current_index in selected_indices:
+                    selected_indices.remove(current_index)
+                else:
+                    selected_indices.add(current_index)
+            elif key.upper() == 'A':
+                selected_indices = set(range(len(items)))
+            elif key.upper() == 'N':
+                selected_indices.clear()
+            elif key.upper() == 'Q' or key == "ESC":
+                return []
+            elif key == "ENTER":
+                return [items[i] for i in sorted(list(selected_indices))]
+
+async def _interactive_file_selector_bak(all_files: List[Path], title: str) -> List[Path]:
     FILES_PER_PAGE, selected_paths, current_page, selected_index_on_page = 20, set(), 0, 0
     base_download_path = Path(DOWNLOADS_DIR_BASE)
     def generate_panel() -> Panel:
@@ -537,3 +574,58 @@ def check_dependency(module_name: str, package_name: str, friendly_name: str) ->
         console = Console()
         console.print(Panel(f"[bold red]Błąd: Brak zależności '{friendly_name}'![/bold red]\n\nUruchom: [cyan]pip install {package_name}[/cyan]", title="Brak Zależności", border_style="red"))
         return False
+
+def create_side_by_side_comparison_panel(
+    item_a_details: dict,
+    item_b_details: dict,
+    title_a: str = "Plik A",
+    title_b: str = "Plik B",
+    is_a_selected: bool = True
+) -> Panel:
+    """
+    Tworzy uniwersalny panel Rich do porównywania dwóch elementów obok siebie.
+
+    Args:
+        item_a_details (dict): Słownik z danymi do wyświetlenia dla elementu A.
+        item_b_details (dict): Słownik z danymi do wyświetlenia dla elementu B.
+        title_a (str): Tytuł dla panelu A.
+        title_b (str): Tytuł dla panelu B.
+        is_a_selected (bool): Wskazuje, który element jest aktualnie "wybrany".
+
+    Returns:
+        Panel: Gotowy do wyświetlenia obiekt Panel z porównaniem.
+    """
+    from rich.layout import Layout
+    from rich.align import Align
+    from rich.text import Text
+
+    layout = Layout()
+    layout.split_row(Layout(name="left"), Layout(name="right"))
+
+    items = [(item_a_details, title_a), (item_b_details, title_b)]
+    
+    for i, (details, title) in enumerate(items):
+        is_selected = (i == 0 and is_a_selected) or (i == 1 and not is_a_selected)
+        
+        status_text = Text("⭐ ZACHOWAJ", style="bold green") if is_selected else Text("🗑️ Usuń", style="dim")
+        border_style = "green" if is_selected else "default"
+
+        table = Table.grid(expand=True, padding=(0, 1))
+        table.add_column(style="cyan", justify="right", width=15)
+        table.add_column()
+        
+        # Iterujemy po słowniku, aby dynamicznie budować tabelę
+        for key, value in details.items():
+            # Prosta logika formatowania dla czytelności
+            if key.lower() == "separator":
+                table.add_row("─" * 15, "─" * 30)
+            else:
+                table.add_row(f"{key}:", str(value))
+
+        panel_content = Group(Align.center(status_text), table)
+        
+        target_layout = layout["left" if i == 0 else "right"]
+        target_layout.update(Panel(panel_content, title=title, border_style=border_style))
+
+    return Panel(layout)
+

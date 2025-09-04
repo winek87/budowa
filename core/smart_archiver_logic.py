@@ -1,166 +1,122 @@
+# plik: core/smart_archiver_logic.py (Wersja z dedykowaną funkcją dla plików lokalnych)
 # -*- coding: utf-8 -*-
 
-# plik: core/smart_archiver_logic.py
-# Wersja 4.2 - Dodano interaktywny podgląd plików
-#
-# ##############################################################################
-# ===                        JAK TO DZIAŁA (PROSTE WYJAŚNIENIE)                ===
-# ##############################################################################
-#
-# "Asystent Porządkowania" to narzędzie, które pomaga w utrzymaniu jakości
-# kolekcji. Wykorzystuje techniki przetwarzania obrazów, aby
-# automatycznie zidentyfikować potencjalnie problematyczne pliki, takie jak:
-#
-#  - Zdjęcia nieostre (rozmyte).
-#  - Zdjęcia zbyt ciemne (niedoświetlone).
-#  - Pliki o bardzo małym rozmiarze lub uszkodzone.
-#
-# Po analizie, prezentuje użytkownikowi listy podejrzanych plików i pozwala
-# na ich interaktywne przejrzenie i podjęcie decyzji dla każdego z osobna.
-#
-################################################################################
-
-# --- GŁÓWNE IMPORTY ---
 import asyncio
-import os
 import logging
+import os
 from pathlib import Path
-from typing import List
+from concurrent.futures import ProcessPoolExecutor
 
-# --- Importy asynchroniczne ---
-import aiosqlite
-
-# --- Zależności zewnętrzne (opcjonalne) ---
 try:
+    from PIL import Image, UnidentifiedImageError
     import cv2
     import numpy as np
 except ImportError:
-    cv2, np = None, None
+    Image, UnidentifiedImageError, cv2, np = None, None, None, None
 
-# --- IMPORTY Z BIBLIOTEKI `rich` ---
-from rich.console import Console, Group
+from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Prompt, Confirm
+from rich.prompt import Prompt
 from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 
-# --- IMPORTY Z WŁASNYCH MODUŁÓW ---
-from .config import DATABASE_FILE, DOWNLOADS_DIR_BASE
-from .utils import create_interactive_menu, _interactive_file_selector, check_dependency, open_image_viewer
-from .database import setup_database
+from .database import setup_database, get_image_paths_for_analysis, get_imported_image_paths_for_analysis
+from .config import DOWNLOADS_DIR_BASE
+from .utils import check_dependency, create_interactive_menu, open_image_viewer
 
-# --- Inicjalizacja i Konfiguracja Modułu ---
 console = Console(record=True)
 logger = logging.getLogger(__name__)
 
-
 # ##############################################################################
-# ===                    SEKCJA 1: FUNKCJE ANALITYCZNE                       ===
+# ===                   SEKCJA 1: FUNKCJE ANALIZUJĄCE OBRAZ                  ===
 # ##############################################################################
 
 def is_blurry(image_path: Path, threshold: int = 100) -> bool:
-    """
-    Sprawdza, czy obraz jest prawdopodobnie nieostry.
-    """
     try:
-        image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
-        if image is None:
-            logger.warning(f"Nie można odczytać obrazu do analizy ostrości: {image_path.name}")
-            return False
-        variance = cv2.Laplacian(image, cv2.CV_64F).var()
-        return variance < threshold
-    except Exception as e:
-        logger.error(f"Błąd analizy ostrości dla {image_path.name}: {e}", exc_info=True)
+        image = cv2.imread(str(image_path))
+        if image is None: return False
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+        return laplacian_var < threshold
+    except Exception:
         return False
 
-def is_dark(image_path: Path, threshold: int = 70) -> bool:
-    """
-    Sprawdza, czy obraz jest prawdopodobnie zbyt ciemny.
-    """
+def is_dark(image_path: Path, threshold: int = 60) -> bool:
     try:
-        gray_image = cv2.imread(str(image_path), cv2.IMREAD_GRAYSCALE)
-        if gray_image is None:
-            logger.warning(f"Nie można odczytać obrazu do analizy jasności: {image_path.name}")
-            return False
-        mean_brightness = np.mean(gray_image)
-        return mean_brightness < threshold
-    except Exception as e:
-        logger.error(f"Błąd analizy jasności dla {image_path.name}: {e}", exc_info=True)
+        image = cv2.imread(str(image_path))
+        if image is None: return False
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        return np.mean(gray) < threshold
+    except Exception:
+        return False
+
+def is_too_small(image_path: Path, size_kb: int = 50) -> bool:
+    try:
+        return image_path.stat().st_size < (size_kb * 1024)
+    except (OSError, FileNotFoundError):
         return False
 
 def is_corrupted(image_path: Path) -> bool:
-    """
-    Sprawdza, czy plik obrazu jest prawdopodobnie uszkodzony.
-    """
     try:
-        if image_path.stat().st_size == 0:
-            return True
-    except FileNotFoundError:
-        return False
-    try:
-        from PIL import Image, UnidentifiedImageError
         with Image.open(image_path) as img:
             img.verify()
         return False
-    except (IOError, SyntaxError, UnidentifiedImageError, ValueError):
+    except (UnidentifiedImageError, IOError, SyntaxError):
         return True
-    except Exception as e:
-        logger.error(f"Nieoczekiwany błąd sprawdzania uszkodzenia {image_path.name}: {e}", exc_info=True)
-        return False
-
-def is_too_small(file_path: Path, size_threshold_kb: int = 50) -> bool:
-    """
-    Sprawdza, czy plik jest podejrzanie mały.
-    """
-    try:
-        file_size_bytes = file_path.stat().st_size
-        return file_size_bytes < (size_threshold_kb * 1024)
-    except (FileNotFoundError, Exception):
-        return False
 
 # ##############################################################################
-# ===                    SEKCJA 2: GŁÓWNA FUNKCJA URUCHOMIENIOWA             ===
+# ===        SEKCJA 2: FUNKCJA ROBOCZA I GŁÓWNY SILNIK ASYSTENTA             ===
 # ##############################################################################
 
-async def run_smart_archiver():
-    """
-    Uruchamia pełny, interaktywny proces Asystenta Porządkowania.
-    """
-    console.clear()
-    logger.info("Uruchamiam Asystenta Porządkowania...")
-    console.print(Panel("🧹 Asystent Porządkowania Zdjęć 🧹", expand=False, style="bold blue"))
+def analyze_single_image(image_path: Path) -> dict:
+    """Funkcja robocza, która wykonuje wszystkie analizy dla jednego obrazu."""
+    if not all([Image, cv2, np]):
+        return {'path': image_path}
+    return {
+        'path': image_path,
+        'is_blurry': is_blurry(image_path),
+        'is_dark': is_dark(image_path),
+        'is_small': is_too_small(image_path),
+        'is_corrupted': is_corrupted(image_path)
+    }
 
-    if not check_dependency("PIL", "Pillow", "Pillow"): return
-    if not check_dependency("cv2", "opencv-python", "OpenCV"): return
-
+async def _run_analysis_process(scan_target: str):
+    """
+    Główna logika robocza Asystenta Porządkowania. Skanuje, analizuje
+    i pozwala na interaktywne zarządzanie problematycznymi plikami.
+    """
     await setup_database()
-    image_paths = []
-    with console.status("[cyan]Wczytywanie ścieżek do zdjęć z bazy danych...[/]"):
-        try:
-            async with aiosqlite.connect(DATABASE_FILE) as conn:
-                query = "SELECT final_path FROM downloaded_media WHERE status = 'downloaded' AND (LOWER(final_path) LIKE '%.jpg' OR LOWER(final_path) LIKE '%.jpeg' OR LOWER(final_path) LIKE '%.png')"
-                cursor = await conn.execute(query)
-                image_paths_tuples = await cursor.fetchall()
-                image_paths = [Path(row[0]) for row in image_paths_tuples if row[0] and Path(row[0]).exists()]
-        except aiosqlite.Error:
-            return
+    
+    image_extensions = ('.jpg', '.jpeg', '.png')
+    target_name = "plików importowanych" if scan_target == 'imported' else "plików pobranych"
+
+    with console.status(f"[cyan]Wczytywanie ścieżek {target_name} z bazy danych...[/]"):
+        if scan_target == 'imported':
+            image_paths = await get_imported_image_paths_for_analysis(image_extensions)
+        else:
+            image_paths = await get_image_paths_for_analysis(image_extensions)
 
     if not image_paths:
-        console.print("\n[bold green]✅ Nie znaleziono żadnych zdjęć do przeanalizowania.[/bold green]")
+        console.print(f"\n[bold green]✅ Nie znaleziono żadnych {target_name} do przeanalizowania.[/bold green]")
         return
 
     blurry_files, dark_files, small_files, corrupted_files = [], [], [], []
-    with Progress(TextColumn("[cyan]{task.description}"), BarColumn(), "[progress.percentage]{task.percentage:>3.0f}%", TimeRemainingColumn()) as progress:
-        task = progress.add_task("Analizuję zdjęcia...", total=len(image_paths))
-        for image_path in image_paths:
-            results = await asyncio.gather(
-                asyncio.to_thread(is_blurry, image_path), asyncio.to_thread(is_dark, image_path),
-                asyncio.to_thread(is_too_small, image_path), asyncio.to_thread(is_corrupted, image_path)
-            )
-            if results[0]: blurry_files.append(image_path)
-            if results[1]: dark_files.append(image_path)
-            if results[2]: small_files.append(image_path)
-            if results[3]: corrupted_files.append(image_path)
-            progress.update(task, advance=1)
+    
+    loop = asyncio.get_running_loop()
+    with Progress(TextColumn("[cyan]{task.description}"), BarColumn(), "[progress.percentage]{task.percentage:>3.0f}%", TimeRemainingColumn(), transient=True) as progress:
+        task = progress.add_task(f"Analizuję {target_name} (na wielu rdzeniach)...", total=len(image_paths))
+        with ProcessPoolExecutor() as executor:
+            futures = [loop.run_in_executor(executor, analyze_single_image, path) for path in image_paths]
+            for future in asyncio.as_completed(futures):
+                try:
+                    result = await future
+                    if result.get('is_blurry'): blurry_files.append(result['path'])
+                    if result.get('is_dark'): dark_files.append(result['path'])
+                    if result.get('is_small'): small_files.append(result['path'])
+                    if result.get('is_corrupted'): corrupted_files.append(result['path'])
+                except Exception as e:
+                    logger.error(f"Błąd podczas analizy obrazu w podprocesie: {e}")
+                finally:
+                    progress.update(task, advance=1)
 
     while True:
         console.clear()
@@ -168,6 +124,7 @@ async def run_smart_archiver():
             "blurry": list(blurry_files), "dark": list(dark_files),
             "small": list(small_files), "corrupted": list(corrupted_files)
         }
+        
         menu_items = []
         if files_map["blurry"]: menu_items.append((f"Przeglądaj nieostre zdjęcia ({len(files_map['blurry'])})", "blurry"))
         if files_map["dark"]: menu_items.append((f"Przeglądaj ciemne zdjęcia ({len(files_map['dark'])})", "dark"))
@@ -179,9 +136,8 @@ async def run_smart_archiver():
             break
         menu_items.append(("Zakończ i wróć do menu głównego", "exit"))
 
-        selected_category = await create_interactive_menu(menu_items, "Asystent Porządkowania - Wyniki Analizy", border_style="blue")
-        if selected_category in ["exit", None]:
-            break
+        selected_category = await create_interactive_menu(menu_items, f"Asystent Porządkowania - Wyniki ({target_name})", border_style="blue")
+        if selected_category in ["exit", None]: break
 
         files_to_review = files_map[selected_category]
         i = 0
@@ -189,9 +145,7 @@ async def run_smart_archiver():
             file_path = files_to_review[i]
             console.clear()
             console.print(Panel(f"Przeglądanie: {selected_category.capitalize()} | Plik {i+1}/{len(files_to_review)}\n[cyan]{file_path.name}[/]", title="Weryfikacja"))
-            
             await asyncio.to_thread(open_image_viewer, file_path)
-            
             action = Prompt.ask("\nAkcja dla tego pliku: ([A]rchiwizuj / [U]suń / [P]omiń / [W]yjście z przeglądania)", choices=["a", "u", "p", "w"], default="p").lower()
 
             if action == 'w': break
@@ -201,7 +155,6 @@ async def run_smart_archiver():
             if action == "a":
                 target_dir = Path(DOWNLOADS_DIR_BASE) / "_ARCHIWUM_Asystenta" / selected_category
                 await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
-            
             try:
                 if action == "a": await asyncio.to_thread(file_path.rename, target_dir / file_path.name)
                 elif action == "u": await asyncio.to_thread(os.remove, file_path)
@@ -215,3 +168,34 @@ async def run_smart_archiver():
             except Exception as e:
                 logger.error(f"Błąd operacji '{action}' na pliku {file_path.name}", exc_info=True)
                 i += 1
+
+# ##############################################################################
+# ===                   SEKCJA 3: GŁÓWNA FUNKCJA URUCHOMIENIOWA                ===
+# ##############################################################################
+
+async def run_smart_archiver():
+    """
+    Wyświetla i zarządza interaktywnym menu dla Asystenta Porządkowania.
+    """
+    if not check_dependency("PIL", "Pillow", "Pillow"): return
+    if not check_dependency("cv2", "opencv-python", "OpenCV"): return
+        
+    menu_items = [
+        ("Analizuj pliki POBRANE z Google Photos", "downloaded"),
+        ("Analizuj pliki IMPORTOWANE z dysku", "imported"),
+        ("Wróć do menu głównego", "exit")
+    ]
+    
+    while True:
+        console.clear()
+        console.print(Panel("🧹 Asystent Porządkowania Zdjęć 🧹", expand=False, style="bold blue"))
+        
+        selected_action = await create_interactive_menu(menu_items, "Wybierz grupę plików do analizy")
+        
+        if selected_action in ["exit", None]:
+            break
+        
+        if selected_action in ["downloaded", "imported"]:
+            await _run_analysis_process(scan_target=selected_action)
+        
+        Prompt.ask("\n[bold]Operacja zakończona. Naciśnij Enter, aby wrócić...[/]")

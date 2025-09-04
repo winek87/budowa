@@ -1,18 +1,5 @@
+# plik: core/menu_logic.py (FINALNA WERSJA PO REFRAKTORYZACJI)
 # -*- coding: utf-8 -*-
-
-# plik: core/menu_logic.py
-# Wersja 17.2 - Zintegrowano Importer Plików z archiwum Takeout
-#
-# ##############################################################################
-# ===                        GŁÓWNA LOGIKA MENU APLIKACJI                    ===
-# ##############################################################################
-#
-# Ten plik zawiera logikę głównego, interaktywnego menu aplikacji. Jego zadaniem
-# jest dynamiczne renderowanie interfejsu, obsługa nawigacji, wczytywanie
-# statystyk i uruchamianie odpowiednich modułów/narzędzi w odpowiedzi na
-# akcje użytkownika.
-#
-################################################################################
 
 # --- GŁÓWNE IMPORTY ---
 import asyncio
@@ -30,31 +17,23 @@ from rich.layout import Layout
 from rich.live import Live
 
 # --- IMPORTY Z WŁASNYCH MODUŁÓW ---
-# Konfiguracja i narzędzia podstawowe
 from .config import DEFAULT_HEADLESS_MODE, DATABASE_FILE
 from .utils import create_interactive_menu
 from .config_editor_logic import get_key
-
-# Nowy, asynchroniczny moduł bazy danych
 from .database import get_db_stats, get_failed_urls_from_db, get_state
 
 # --- GŁÓWNE SILNIKI I NARZĘDZIA ---
-# Centrum Pobierania
-from .master_logic import run_with_restarts as run_master_restarts
-from .master_logic import interactive_retry_failed_files as master_interactive_retry
-from .master_logic import run_single_file_download
+# POPRAWIONE IMPORTY Z `master_logic`
+from .master_logic import run_with_restarts, interactive_retry_failed_files, run_single_file_download
 
 # Skanery i Importery
 from .advanced_scanner_logic import run_advanced_scanner
 from .local_scanner_logic import run_local_scanner_menu
 from .takeout_importer_logic import run_takeout_importer
 from .takeout_url_processor_logic import run_takeout_url_processor
-# --- POCZĄTEK ZMIAN: Import nowego modułu ---
 from .takeout_file_importer_logic import run_takeout_file_importer
-# --- KONIEC ZMIAN ---
 from .recovery_logic import run_recovery_downloader
 from .advanced_recovery_logic import run_advanced_recovery
-
 
 # Narzędzia Analityczne i Diagnostyczne
 from .analytics import run_analytics
@@ -87,7 +66,6 @@ from .interceptor_logic import run_interceptor
 # --- Inicjalizacja i Konfiguracja Modułu ---
 console = Console(record=True)
 logger = logging.getLogger(__name__)
-
 
 # ##############################################################################
 # ===                     SEKCJA 1: DEFINICJE PODMENU                        ===
@@ -127,11 +105,12 @@ async def run_master_scan_submenu():
         repair_label = f"Napraw błędy ({num_failed}), następnie wznów skan"
         if num_failed == 0: repair_label = "[dim]Napraw błędy (brak błędów do naprawy)[/dim]"
 
+        # POPRAWIONE WYWOŁANIA FUNKCJI
         menu_items = [
-            (scan_label, partial(run_master_restarts, scan_mode='main', retry_failed=False, headless_mode=DEFAULT_HEADLESS_MODE)),
-            (repair_label, partial(run_master_restarts, scan_mode='main', retry_failed=True, headless_mode=DEFAULT_HEADLESS_MODE)),
-            ("Interaktywne ponawianie błędów", master_interactive_retry),
-            ("Wymuś pełne odświeżenie (od początku)", partial(run_master_restarts, scan_mode='forced', retry_failed=False, headless_mode=DEFAULT_HEADLESS_MODE)),
+            (scan_label, partial(run_with_restarts, scan_mode='main', retry_failed=False, headless_mode=DEFAULT_HEADLESS_MODE)),
+            (repair_label, partial(run_with_restarts, scan_mode='main', retry_failed=True, headless_mode=DEFAULT_HEADLESS_MODE)),
+            ("Interaktywne ponawianie błędów", interactive_retry_failed_files),
+            ("Wymuś pełne odświeżenie (od początku)", partial(run_with_restarts, scan_mode='forced', retry_failed=False, headless_mode=DEFAULT_HEADLESS_MODE)),
             ("Wróć do menu głównego", "back")
         ]
         if num_failed == 0: menu_items[1] = (repair_label, None)
@@ -163,10 +142,8 @@ async def run_maintenance_tools_submenu():
     """
     items = [
         ("Importuj metadane z Google Takeout", run_takeout_importer),
-        # --- POCZĄTEK ZMIAN: Dodanie nowej opcji ---
         ("Importuj PLIKI z Google Takeout (uzupełnij braki)", run_takeout_file_importer),
         ("Napraw uszkodzone pliki obrazów (JPEG, PNG...)", run_image_fixer),
-        # --- KONIEC ZMIAN ---
         ("Uzupełnij/Napraw z URL-a Takeout", run_takeout_url_processor),
         ("Napraw ścieżki plików w bazie", run_path_fixer),
         ("Menedżer Kopii Zapasowych", run_backup_manager),
