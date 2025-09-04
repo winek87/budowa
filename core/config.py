@@ -20,7 +20,7 @@ import os
 # Ta zmienna jest używana do budowania ścieżek względnych wewnątrz projektu.
 # Powinna wskazywać na główny folder, w którym znajduje się plik uruchom.py.
 # ZMIANA: Konwertujemy string na obiekt Path dla łatwiejszych operacji.
-PROJECT_ROOT = "/media/MyDrive/budowa4"
+PROJECT_ROOT = "/media/MyDrive/budowa5"
 
 # --- Funkcja pomocnicza do tworzenia folderów ---
 def ensure_dir(path: Path):
@@ -45,17 +45,17 @@ def ensure_dir(path: Path):
 # Zastąp placeholder pełną ścieżką do folderu, np. "C:/Users/TwojaNazwa/google_photos_toolkit/session"
 # lub "/home/twojanazwa/google_photos_toolkit/session".
 # UŻYTKOWNIK DEFINIUJE SWOJĄ WŁASNĄ, ABSOLUTNĄ ŚCIEŻKĘ
-SESSION_DIR = "app_data/session"
+SESSION_DIR = "/media/MyDrive/budowa4/app_data/session"
 
 # Nazwa pliku bazy danych. To "pamiętnik" robota, w którym zapisuje postęp
 # i wszystkie zebrane informacje. Zazwyczaj nie ma potrzeby tego zmieniać.
 # Folder na bazę danych
-DATABASE_FILE = "app_data/DB/database.db"
+DATABASE_FILE = "DB/database.db"
 
 # Główny folder, w którym będą zapisywane pobrane zdjęcia i filmy.
 # Program automatycznie utworzy w nim podfoldery ROK/MIESIĄC.
 # Zastąp placeholder pełną ścieżką, np. "D:/Moje_Zdjecia_Google".
-DOWNLOADS_DIR_BASE = "PF"
+DOWNLOADS_DIR_BASE = "/media/MyDrive/budowa5/PF"
 
 # Folder na duplikaty z trybu wymuszonego skanowania.
 # Gdy uruchomisz skan w trybie "Wymuś pełne odświeżenie", a program napotka
@@ -65,10 +65,10 @@ FORCED_DUPLICATES_DIR = "PF/_DUPLIKATY_WYMUSZONE"
 
 # Nazwa pliku używanego przez narzędzia skanujące do wczytywania listy
 # adresów URL do przetworzenia. Używane przez "Skanuj z pliku".
-URL_INPUT_FILE = "ulr/urls_to_scan.txt"
+URL_INPUT_FILE = "urls_to_scan.txt"
 
 # Plik logu dla RichHandler
-LOG_FILENAME = "app_data/dziennik/app.log"
+LOG_FILENAME = "app.log"
 
 # ##############################################################################
 # ===                      SEKCJA 2: GŁÓWNE ZACHOWANIE SKANU                 ===
@@ -77,8 +77,8 @@ LOG_FILENAME = "app_data/dziennik/app.log"
 # Startowy URL. To punkt startowy dla zupełnie nowego skanu.
 # WAŻNE: Wklej tutaj link do jednego z Twoich NAJSTARSZYCH zdjęć.
 # Dzięki temu program będzie poruszał się od przeszłości do teraźniejszości.
-START_URL = " "
-
+START_URL = "
+URL_START_PHOTO = "
 # Kierunek nawigacji po galerii.
 # 'ArrowLeft'  -> do NOWSZYCH zdjęć (od przeszłości do teraźniejszości). ZALECANE.
 # 'ArrowRight' -> do STARSZYCH zdjęć (od teraźniejszości do przeszłości).
@@ -187,7 +187,7 @@ BROWSER_TYPE = "chromium"
 # Czy program ma domyślnie działać w tle (bez widocznego okna przeglądarki)?
 # True -> Działa w tle (szybciej, mniej zasobów).
 # False -> Działa z widocznym oknem (dobre do obserwacji i diagnozy).
-DEFAULT_HEADLESS_MODE = True
+DEFAULT_HEADLESS_MODE = False
 
 # Czy symulator kursora ma działać również w trybie cichym (headless)?
 # Może pomóc uniknąć wykrycia jako bot na niektórych stronach.
@@ -226,10 +226,10 @@ NAV_ARROW_RIGHT_SELECTOR = ".SxgK2b.Cwtbxf"
 # Wypełnij te pola, aby otrzymywać powiadomienia (funkcja w budowie).
 
 # Token Twojego bota na Telegramie. Uzyskasz go od @BotFather.
-TELEGRAM_BOT_TOKEN = " "
+TELEGRAM_BOT_TOKEN = "
 
 # ID Twojego czatu na Telegramie. Możesz je uzyskać np. od bota @userinfobot.
-TELEGRAM_CHAT_ID = " "
+TELEGRAM_CHAT_ID = "
 
 # ##############################################################################
 # ===                     SEKCJA 8: USTAWIENIA LOGOWANIA                     ===
@@ -254,7 +254,7 @@ LOG_ENABLED = True
 #  - "WARNING": Ostrzeżenia o nietypowych, ale niekrytycznych sytuacjach.
 #  - "ERROR":   Błędy, które zatrzymały pojedynczą operację, ale niekoniecznie cały program.
 #  - "CRITICAL": Błędy krytyczne, które prawdopodobnie zakończą działanie całego programu.
-LOG_LEVEL = "INFO"
+LOG_LEVEL = "DEBUG"
 
 # Czy logi mają być dodatkowo zapisywane do pliku tekstowego?
 # Zastępuje poprzednią zmienną LOG_TO_FILE.
@@ -272,14 +272,14 @@ LOG_SAVE_TO_FILE = True
 # --- USTAWIENIA KOPII ZAPASOWEJ DANYCH (dla Menedżera w menu) ---
 
 # Folder na kopie zapasowe danych, umieszczony wewnątrz app_data.
-BACKUP_DIR = "/media/Kopia_Zapasowa_Danych"
+BACKUP_DIR = "/media/MyDrive/budowa4/app_data/Kopia_Zapasowa_Danych"
 
 # Lista kluczowych plików i folderów DANYCH dołączanych do tej kopii.
 # ZMIANA: Używamy PROJECT_ROOT do tworzenia bezpiecznych, absolutnych ścieżek.
 FILES_TO_BACKUP = [
-    "/media/config.py",
-    "/media/database.db",
-    "/media/session"
+    "/media/MyDrive/budowa4/core/config.py",
+    "/media/MyDrive/budowa4/app_data/DB/database.db",
+    "/media/MyDrive/google_photos_toolkit/ai-w/test/ai-v2/sesje/PF/session"
 ]
 
 
@@ -294,7 +294,7 @@ AUTO_BACKUP_ON_START = False
 
 # Konfiguracja dla pełnego backupu projektu, wykonywanego przez launcher.
 PROJECT_BACKUP_CONFIG = {
-        "ARCHIVE_DIR": "/media/Kopia_Zapasowa_Projektu",
+        "ARCHIVE_DIR": "/media/MyDrive/budowa4/app_data/Kopia_Zapasowa_Projektu",
         "BASE_NAME": "projekt_backup",
         "PATTERNS_TO_EXCLUDE": [
             "*.pyc",
@@ -337,13 +337,13 @@ AI_TAGGER_CONFIDENCE_THRESHOLD = 0.9
 #     "/mnt/dysk_zewnetrzny/Fotki_Rodzinne"
 # ]
 LOCAL_SCANNER_DIRECTORIES = [
-    "/media"
+    "/media/NEXTCLOUD/winek/files/Dev"
 ]
 
 # Dedykowany folder do przechowywania baz wektorów dla rozpoznawania twarzy.
 # Zaleca się, aby był to folder poza główną biblioteką.
 # Przykład: "/home/uzytkownik/Aplikacje/FaceDB_Vectors"
-FACE_DB_VECTOR_PATH = "/media/FaceDB_Vectors"
+FACE_DB_VECTOR_PATH = "/media/MyDrive/budowa4/FaceDB_Vectors"
 
     
 # ##############################################################################

@@ -1,0 +1,54 @@
+# ##############################################################################
+# #                        Zależności Aplikacji (requirements.txt)             #
+# ##############################################################################
+#
+# Ten plik definiuje wszystkie zewnętrzne biblioteki Python wymagane do
+# uruchomienia i pełnego funkcjonowania projektu. Użycie tego pliku
+# gwarantuje spójność środowiska na różnych maszynach.
+#
+# Aby zainstalować wszystkie poniższe pakiety, uruchom komendę w terminalu:
+# pip install -r requirements.txt
+#
+
+# --- Podstawowe zależności i silnik aplikacji ---
+# Biblioteki kluczowe dla działania interfejsu, bazy danych i automatyzacji.
+rich==13.7.1
+playwright==1.44.0
+aiosqlite==0.20.0
+
+# --- Sztuczna Inteligencja i Przetwarzanie Obrazów (AI/ML) ---
+# Zestaw bibliotek do analizy obrazów, w tym tagowania i rozpoznawania twarzy.
+# Uwaga: TensorFlow jest dużą biblioteką. Instalacja może zająć więcej czasu.
+tensorflow==2.16.1
+Pillow==10.3.0
+numpy==1.26.4
+deepface==0.0.92
+opencv-python==4.9.0.80
+imagehash==4.3.1
+dlib==19.24.4  # Wymagany przez jeden z modeli DeepFace
+
+# --- Analiza i Wizualizacja Danych ---
+# Narzędzia do generowania raportów, map i chmur słów.
+geopy==2.4.1
+folium==0.17.0
+wordcloud==1.9.3
+matplotlib==3.9.0  # Zależność dla wordcloud
+
+# --- Narzędzia Pomocnicze i Deweloperskie ---
+# Biblioteki do obsługi metadanych, komunikacji sieciowej i analizy kodu.
+pyexiftool==0.5.6
+httpx==0.27.0
+flake8==7.1.0
+term-image==0.7.1
+pytest==8.2.2
+pytest-asyncio==0.23.7
+
+# --- Zależności podrzędne ---
+# Poniższe pakiety są zazwyczaj instalowane automatycznie jako zależności
+# powyższych bibliotek, ale ich jawne zdefiniowanie zwiększa stabilność.
+pandas==2.2.2
+tqdm==4.66.4
+gdown==5.2.0
+Flask==3.0.3
+mtcnn==0.1.1
+keras==3.3.3

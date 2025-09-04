@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 
 # plik: core/session_logic.py
-# Wersja 4.0 - W pełni asynchroniczny i udokumentowany
+# Wersja 4.1 - Dodano funkcję sprawdzania statusu logowania
 #
 # ##############################################################################
 # ===                     MODUŁ ZARZĄDZANIA SESJĄ LOGOWANIA                  ===
 # ##############################################################################
 #
-# Ten plik zawiera logikę odpowiedzialną za proces ręcznego logowania
-# użytkownika do konta Google. Jego zadaniem jest usunięcie starej sesji,
-# uruchomienie nowej, czystej przeglądarki i poczekanie, aż użytkownik
-# zakończy proces logowania, a następnie zapisanie nowej sesji na dysku.
+# Ten plik zawiera logikę odpowiedzialną za:
+#  1. Proces ręcznego logowania użytkownika i tworzenia nowej sesji.
+#  2. Weryfikację, czy istniejąca sesja jest wciąż aktywna przed uruchomieniem
+#     głównych modułów aplikacji.
 #
 ################################################################################
 
@@ -21,7 +21,7 @@ from pathlib import Path
 import asyncio
 
 # --- Playwright ---
-from playwright.async_api import async_playwright
+from playwright.async_api import Page, async_playwright
 
 # --- IMPORTY Z BIBLIOTEKI `rich` ---
 from rich.console import Console
@@ -123,3 +123,54 @@ async def refresh_session():
             "Uruchom w terminalu polecenie: [cyan]playwright install --with-deps[/cyan]",
             title="[red]Błąd Playwright[/red]", border_style="red"
         ))
+
+
+async def check_login_status(page: Page):
+    """
+    Sprawdza, czy użytkownik jest poprawnie zalogowany na stronie Google Photos.
+
+    Weryfikacja polega na wyszukaniu na stronie unikalnego elementu,
+    który jest widoczny tylko dla zalogowanych użytkowników (np. ikona profilu).
+
+    Args:
+        page: Obiekt strony Playwright do sprawdzenia.
+
+    Raises:
+        Exception: Rzuca wyjątek, jeśli użytkownik nie jest zalogowany,
+                   co przerywa dalsze działanie skryptu i informuje o konieczności
+                   odświeżenia sesji.
+    """
+    logger.info("Rozpoczynam weryfikację statusu logowania...")
+    console.print("\n[dim]Sprawdzam status sesji logowania...[/dim]")
+
+    try:
+        # Szukamy elementu, który jest niezawodnym wskaźnikiem zalogowania -
+        # linku do opcji wylogowania, zwykle powiązanego z ikoną awatara.
+        profile_button_selector = "a[href^='https://accounts.google.com/SignOutOptions']"
+        
+        # Czekamy na element tylko przez krótki czas. Jeśli go nie ma, to znaczy,
+        # że nie jesteśmy zalogowani.
+        await page.wait_for_selector(profile_button_selector, state='visible', timeout=10000)
+        
+        logger.info("Weryfikacja statusu logowania zakończona pomyślnie.")
+        console.print("[bold green]✅ Sesja logowania jest aktywna.[/bold green]")
+
+    except Exception:
+        logger.error("Nie udało się zweryfikować statusu logowania. Prawdopodobnie sesja wygasła.")
+        
+        error_panel = Panel(
+            (
+                "Nie udało się potwierdzić zalogowania. Twoja sesja prawdopodobnie wygasła.\n\n"
+                "Aby kontynuować, musisz odświeżyć swoją sesję logowania.\n"
+                "Wróć do menu głównego i wybierz opcję:\n"
+                "[bold cyan]Zarządzanie Sesją -> Odśwież sesję logowania[/]"
+            ),
+            title="[bold red]❌ Wymagane Logowanie[/]",
+            border_style="red",
+            expand=False
+        )
+        console.print(error_panel)
+        
+        # Rzucenie wyjątku jest ważne, ponieważ zatrzymuje działanie
+        # głównego skryptu (master_logic) i zapobiega błędom.
+        raise Exception("Użytkownik nie jest zalogowany.")

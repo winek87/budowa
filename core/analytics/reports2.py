@@ -1,4 +1,4 @@
-# plik: core/analytics/reports.py (FINALNA WERSJA PO OPTYMALIZACJI FAZY 4)
+# plik: core/analytics/reports.py (FINALNA WERSJA PO REFRAKTORYZACJI)
 # -*- coding: utf-8 -*-
 
 import logging
@@ -12,8 +12,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 from rich.table import Table
 
-# ZMIANA: Importujemy obie funkcje do ładowania danych
-from .data_loader import get_analytics_data, get_all_media_entries
+from .data_loader import get_all_media_entries
 from ..utils import create_interactive_menu, format_size_for_display
 
 console = Console(record=True)
@@ -22,15 +21,10 @@ logger = logging.getLogger(__name__)
 MONTH_NAMES = {1: "Styczeń", 2: "Luty", 3: "Marzec", 4: "Kwiecień", 5: "Maj", 6: "Czerwiec",
                7: "Lipiec", 8: "Sierpień", 9: "Wrzesień", 10: "Październik", 11: "Listopad", 12: "Grudzień"}
 
-
 # ##############################################################################
 # ===           SEKCJA 1: FUNKCJE PRZYGOTOWANIA DANYCH (LOGIKA)              ===
 # ##############################################################################
-#
-# Te funkcje pozostają na razie, ponieważ wykonują obliczenia (np. na proporcjach
-# obrazu), które nie zostały jeszcze przeniesione do zapytania SQL.
-# W przyszłości można je będzie usunąć, rozszerzając `get_aggregated_analytics_data`.
-#
+
 def _prepare_technical_stats_data(all_media_data: list) -> dict:
     """Przetwarza surowe dane i zwraca słownik ze statystykami technicznymi."""
     MEDIA_TYPES = {
@@ -132,9 +126,9 @@ def _prepare_metadata_health_data(all_media_data: list) -> dict:
 # ===           SEKCJA 2: FUNKCJE WYŚWIETLANIA RAPORTÓW (UI)                 ===
 # ##############################################################################
 
-def _generate_technical_stats_group(analytics_data: dict) -> Group:
+def _generate_technical_stats_group(all_media_data: list) -> Group:
     """Wewnętrzna funkcja generująca grupę obiektów Rich dla raportu technicznego."""
-    stats_data = _prepare_technical_stats_data(analytics_data['all_entries'])
+    stats_data = _prepare_technical_stats_data(all_media_data)
     media_type_table = Table(title="Podsumowanie wg typów mediów")
     media_type_table.add_column("Typ", style="cyan"); media_type_table.add_column("Ilość", justify="right"); media_type_table.add_column("Rozmiar", justify="right")
     for cat, stats in stats_data["category_stats"]:
@@ -149,9 +143,9 @@ def _generate_technical_stats_group(analytics_data: dict) -> Group:
     layout_grid.add_row(media_type_table, extension_table, ratio_table)
     return Group(Panel(layout_grid, title=f"Analiza Techniczna ({stats_data['total_files']} plików)", border_style="green", padding=(1, 1)))
 
-def _generate_seasonal_stats_group(analytics_data: dict) -> Group:
+def _generate_seasonal_stats_group(all_media_data: list) -> Group:
     """Wewnętrzna funkcja generująca grupę obiektów Rich dla raportu sezonowego."""
-    stats_data = _prepare_seasonal_stats_data(analytics_data['all_entries'])
+    stats_data = _prepare_seasonal_stats_data(all_media_data)
     monthly_table = Table(title="Średnia aktywność w poszczególnych miesiącach")
     monthly_table.add_column("Miesiąc", style="cyan"); monthly_table.add_column("Liczba Zdjęć", justify="right")
     for month_num, count in stats_data["monthly_counts"]: monthly_table.add_row(f"{month_num:02d} - {MONTH_NAMES.get(month_num, '')}", str(count))
@@ -160,9 +154,9 @@ def _generate_seasonal_stats_group(analytics_data: dict) -> Group:
     for season, count in stats_data["seasonal_counts"]: seasonal_table.add_row(season, str(count))
     return Group(Panel(Group(monthly_table, "\n", seasonal_table), title=f"Analiza Sezonowa ({stats_data['total_files']} plików)", border_style="green", padding=(1, 2)))
 
-def _generate_rankings_group(analytics_data: dict) -> Group:
+def _generate_rankings_group(all_media_data: list) -> Group:
     """Wewnętrzna funkcja generująca grupę obiektów Rich dla raportu rankingowego."""
-    stats_data = _prepare_rankings_data(analytics_data['all_entries'])
+    stats_data = _prepare_rankings_data(all_media_data)
     people_table = Table(title="Najczęściej fotografowane osoby (TOP 15)")
     people_table.add_column("Osoba", style="cyan"); people_table.add_column("Liczba zdjęć", justify="right")
     if not stats_data["people_ranking"]: people_table.add_row("[dim]Brak danych.[/dim]", "")
@@ -175,18 +169,18 @@ def _generate_rankings_group(analytics_data: dict) -> Group:
         for item, count in stats_data["album_ranking"]: album_table.add_row(str(item), str(count))
     return Group(Panel(Group(people_table, "\n", album_table), title=f"Rankingi Społecznościowe ({stats_data['total_files']} plików)", border_style="green", padding=(1, 2)))
 
-def _generate_largest_files_group(analytics_data: dict) -> Group:
+def _generate_largest_files_group(all_media_data: list) -> Group:
     """Wewnętrzna funkcja generująca grupę obiektów Rich dla raportu o największych plikach."""
-    stats_data = _prepare_largest_files_data(analytics_data['all_entries'])
+    stats_data = _prepare_largest_files_data(all_media_data)
     if not stats_data["largest_files"]: return Group(Panel("[yellow]Brak danych o rozmiarach plików do analizy.[/yellow]"))
     table = Table(title="30 plików zajmujących najwięcej miejsca w kolekcji")
     table.add_column("Nazwa Pliku", style="cyan"); table.add_column("Rozmiar", justify="right"); table.add_column("Data", justify="right")
     for entry in stats_data["largest_files"]: table.add_row(entry['filename'], format_size_for_display(entry['size']), entry['dt'].strftime('%Y-%m-%d'))
     return Group(Panel(table, border_style="green", title=f"Ranking Największych Plików ({stats_data['total_files']} plików)"))
 
-def _generate_metadata_health_group(analytics_data: dict) -> Group:
+def _generate_metadata_health_group(all_media_data: list) -> Group:
     """Wewnętrzna funkcja generująca grupę obiektów Rich dla raportu o zdrowiu metadanych."""
-    stats_data = _prepare_metadata_health_data(analytics_data['all_entries'])
+    stats_data = _prepare_metadata_health_data(all_media_data)
     table = Table(title=f"Kompletność metadanych (na podstawie {stats_data['total_files']} plików)")
     table.add_column("Typ Metadanych", style="cyan"); table.add_column("Liczba Braków", justify="right"); table.add_column("Kompletność", justify="right")
     for item in stats_data["health_stats"]: table.add_row(item["name"], item["missing_count"], item["completeness_str"])
@@ -203,17 +197,12 @@ async def _generate_and_show_report(report_key: str, generator_func, title: str)
     console.print(Panel(f"[bold green]{title}[/]", expand=False))
 
     with console.status("[cyan]Przygotowywanie danych do raportu...[/]"):
-        # ZMIANA: Pobieramy OBA zestawy danych. Zoptymalizowany dla szybkich raportów
-        # i pełny dla tych, które jeszcze tego wymagają.
-        analytics_data = {
-            'aggregated': await get_analytics_data(),
-            'all_entries': await get_all_media_entries()
-        }
+        all_media_data = await get_all_media_entries()
 
-    if not analytics_data['all_entries']:
+    if not all_media_data:
         console.print("[red]Brak danych do wygenerowania raportu.[/red]"); return
 
-    report_content = generator_func(analytics_data)
+    report_content = generator_func(all_media_data)
     console.print(report_content)
 
     if Confirm.ask("\n[cyan]Czy chcesz wyeksportować ten raport do pliku HTML?[/cyan]"):
@@ -239,7 +228,7 @@ async def export_report_menu():
     """Wyświetla menu wyboru raportu do wyeksportowania i zarządza procesem zapisu."""
     console.clear()
     logger.info("Uruchomiono menedżera eksportu raportów.")
-    
+
     report_generators = {
         "full": ("Pełny Raport (wszystkie sekcje)", [_generate_technical_stats_group, _generate_seasonal_stats_group, _generate_rankings_group, _generate_largest_files_group, _generate_metadata_health_group]),
         "technical": ("Tylko Raport Techniczny", [_generate_technical_stats_group]),
@@ -254,26 +243,26 @@ async def export_report_menu():
         logger.info("Anulowano eksport raportu."); return
 
     with console.status("[cyan]Przygotowywanie danych do raportu...[/]"):
-        analytics_data = {
-            'aggregated': await get_analytics_data(),
-            'all_entries': await get_all_media_entries()
-        }
+        all_media_data = await get_all_media_entries()
 
-    if not analytics_data['all_entries']:
+    if not all_media_data:
         console.print("[red]Brak danych do wygenerowania raportu.[/red]"); return
 
     _, generator_funcs = report_generators[selected_report_key]
     
+    # Stwórz nową konsolę do zapisu, aby zebrać całą treść raportu
+    export_console = Console(record=True, force_terminal=True)
+    for func in generator_funcs:
+        content_group = func(all_media_data)
+        export_console.print(content_group)
+
     reports_dir = Path("app_data/reports")
     reports_dir.mkdir(parents=True, exist_ok=True)
     filename = reports_dir / f"raport_{selected_report_key}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
-    
+
     try:
-        export_console = Console(record=True, force_terminal=True)
-        for func in generator_funcs:
-            content_group = func(analytics_data)
-            export_console.print(content_group)
-        export_console.save_html(str(filename), clear=False)
+        with console.status(f"[cyan]Zapisywanie do pliku [bold]{filename.name}[/bold]...[/]"):
+            export_console.save_html(str(filename), clear=False)
         console.print(Panel(f"[green]Sukces![/green] Raport zapisano do [cyan]{filename.resolve()}[/cyan]"))
     except Exception as e:
         logger.critical("Błąd podczas zapisu pliku HTML.", exc_info=True)

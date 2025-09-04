@@ -1,0 +1,59 @@
+Doskonale. Zakończyliśmy bardzo dużą i ważną część naszej pracy. Zgodnie z Twoją prośbą, oto zaktualizowana lista TODO, która odzwierciedla nasz obecny postęp i pokazuje, co jeszcze przed nami.
+
+### Aktualna Lista Zadań (TODO)
+
+#### ✅ Faza 1: Wzmocnienie Fundamentów (ZAKOŃCZONA)
+*Cel: Uczynienie kodu bardziej stabilnym, bezpiecznym i łatwiejszym w zarządzaniu.*
+
+- [x] **Centralizacja Logiki Bazy Danych**
+    - [x] Utworzenie w `core/database.py` dedykowanych funkcji dla wszystkich modułów logicznych.
+    - [x] Refaktoryzacja wszystkich modułów logicznych (`master_logic`, `integrity_validator`, `analytics` itd.), aby używały funkcji z `core/database.py`.
+
+- [x] **Ujednolicenie Obsługi Ścieżek Plików**
+    - [x] Weryfikacja i poprawa obsługi ścieżek we wszystkich zrefaktoryzowanych modułach.
+
+#### ✅ Faza 2: Refaktoryzacja i Poprawa Struktury Kodu (ZAKOŃCZONA)
+*Cel: Zwiększenie czytelności, redukcja powtórzeń i ułatwienie przyszłego rozwoju.*
+
+- [x] **Podział Największych Modułów**
+    - [x] Utworzenie nowego folderu `core/downloader` i przeniesienie do niego logiki nawigacji i pobierania z `core/master_logic.py`.
+    - [x] Refaktoryzacja `core/master_logic.py`, aby pełnił rolę "orkiestratora".
+
+- [x] **Separacja Logiki od Prezentacji (UI)**
+    - [x] Identyfikacja funkcji (np. w `core/analytics/reports.py`), które jednocześnie pobierają dane i renderują tabele `rich`.
+    - [x] Podział każdej z nich na dwie: jedną (`_generate_*_data`) zwracającą dane, i drugą (`display_*_report`) renderującą te dane.
+
+- [x] **Stworzenie Biblioteki Komponentów UI**
+    - [x] Analiza i unifikacja podobnych interfejsów do porównywania plików z `core/integrity_validator_logic.py` i `core/visual_duplicate_finder.py`.
+    - [x] Stworzenie w `core/utils.py` jednej, generycznej funkcji do tworzenia widoku porównawczego "obok siebie".
+
+#### ✅ Faza 3: Zapewnienie Niezawodności i Testowanie (W TRAKCIE)
+*Cel: Zbudowanie "siatki bezpieczeństwa", która będzie chronić przed błędami.*
+
+- [x] **Wprowadzenie Testów Jednostkowych**
+    - [x] Dodanie `pytest` do zależności projektu.
+    - [x] Utworzenie folderu `tests/`.
+    - [x] Napisanie pierwszych testów dla kluczowych, uniwersalnych funkcji z `core/utils.py`.
+    - [x] Napisanie testów dla nowej, scentralizowanej warstwy dostępu do bazy danych.
+
+- [ ] **Wzmocnienie Walidacji Danych Wejściowych**
+    - [ ] Przegląd `core/config_editor_logic.py` i dodanie bardziej szczegółowych walidatorów dla wprowadzanych wartości.
+
+#### ❌ Faza 4: Optymalizacja Wydajności (Do zrobienia)
+*Cel: Poprawa szybkości działania i zmniejszenie zużycia zasobów.*
+
+- [ ] **Optymalizacja Modułów Analitycznych**
+    - [ ] Refaktoryzacja `core/analytics/data_loader.py` i funkcji w `core/analytics/reports.py` tak, aby agregacja danych odbywała się na poziomie zapytań SQL.
+
+- [ ] **Wykorzystanie Wielu Procesów dla zadań CPU**
+    - [ ] W modułach intensywnie przetwarzających obrazy (np. `core/smart_archiver_logic.py`) rozważenie użycia `ProcessPoolExecutor`.
+
+#### ❌ Faza 5: Finalizacja i Dokumentacja (Do zrobienia)
+*Cel: "Wypolerowanie" projektu.*
+
+- [ ] **Ujednolicenie Stylu Kodu**
+    - [ ] Skonfigurowanie `flake8` i poprawienie wszystkich zgłoszonych problemów stylistycznych.
+
+- [ ] **Uzupełnienie Dokumentacji**
+    - [ ] Przegląd wszystkich modułów i uzupełnienie `docstring` dla każdej funkcji.
+    - [ ] Zaktualizowanie głównego pliku `README.md`.

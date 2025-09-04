@@ -35,7 +35,7 @@ from .config import (
     START_URL, METADATA_STRATEGY, ENABLE_SHAKE_THE_SCAN,
     SESSION_DIR, DOWNLOADS_DIR_BASE, MAX_RESTARTS_ON_FAILURE,
     RESTART_DELAY_SECONDS, BROWSER_TYPE, BROWSER_ARGS, BLOCKED_RESOURCE_TYPES,
-    WAIT_FOR_SELECTOR, ENABLE_RESOURCE_BLOCKING, ENABLE_PAUSE_AFTER_REPAIR
+    WAIT_FOR_SELECTOR, ENABLE_RESOURCE_BLOCKING, ENABLE_PAUSE_AFTER_REPAIR, DIRECTION_KEY
 )
 from .database import (
     set_state, get_state, add_google_photo_entry,
@@ -69,7 +69,6 @@ async def block_unwanted_resources(route):
     else:
         await route.continue_()
 
-# ##############################################################################
 
 def _create_summary_panel(url: str, status: str, metadata: Dict) -> Panel:
     """Tworzy estetyczny panel Rich podsumowujący wynik operacji dla jednego pliku."""
@@ -127,8 +126,6 @@ def _create_summary_panel(url: str, status: str, metadata: Dict) -> Panel:
         border_style=border_style,
         subtitle_align="right"
     )
-
-# ##############################################################################
 
 async def _confirm_page_loaded(page: Page, current_url: str) -> str:
     """Krok 1: Wizualnie potwierdza załadowanie strony i zwraca ID zdjęcia."""
@@ -196,73 +193,15 @@ async def process_single_photo_page(page: Page, current_url: str, scan_mode: str
 # ===               SEKCJA 3: NARZĘDZIA DO RĘCZNEJ NAPRAWY BŁĘDÓW              ===
 # ##############################################################################
 
-async def run_single_file_download():
-    """
-    Uruchamia proces pobierania dla jednego, konkretnego adresu URL podanego przez użytkownika.
-    """
-    console.clear()
-    console.print(Panel("[bold cyan]📥 Pobieranie Pojedynczego Pliku 📥[/bold cyan]", border_style="cyan"))
-    url = Prompt.ask("\n[bold]Wklej adres URL zdjęcia lub filmu, który chcesz pobrać[/bold]")
-    if not url.strip().startswith("http"):
-        logger.error("Podany ciąg znaków nie jest prawidłowym adresem URL.")
-        console.print("[bold red]To nie jest prawidłowy adres URL.[/]")
-        return
-
-    # Ta funkcja wymaga dostępu do obiektu `page`, więc musi uruchomić przeglądarkę
-    async with async_playwright() as p:
-        browser, page = None, None
-        try:
-            browser = await getattr(p, BROWSER_TYPE).launch_persistent_context(
-                Path(SESSION_DIR).expanduser(), headless=False, args=BROWSER_ARGS.get(BROWSER_TYPE)
-            )
-            page = await browser.new_page()
-
-            # Sprawdzamy status logowania, zanim cokolwiek zrobimy
-            from .session_logic import check_login_status
-            await check_login_status(page)
-
-            with console.status(f"[cyan]Przetwarzanie URL: [dim]{url}[/dim]...[/]"):
-                await page.goto(url)
-                # Wywołujemy główny procesor, tak jak w pętli, ale tylko raz
-                success, status, details = await process_single_photo_page(
-                    page, page.url, 'forced'
-                )
-
-            console.clear()
-            if success:
-                summary_panel = _create_summary_panel(url, status, details)
-                console.print(summary_panel)
-            else:
-                error_panel = Panel(
-                    f"Wystąpił błąd podczas przetwarzania:\n[dim]{details.get('error', 'Nieznany błąd')}[/]",
-                    title="[bold red]❌ Pobieranie Nieudane[/]",
-                    border_style="red"
-                )
-                console.print(error_panel)
-
-        except Exception as e:
-            logger.critical("Wystąpił krytyczny błąd podczas pobierania pojedynczego pliku.", exc_info=True)
-            console.print(f"\n[bold red]Wystąpił krytyczny błąd: {e}[/]")
-        finally:
-            if browser:
-                await browser.close()
-
-# ##############################################################################
-
 async def interactive_retry_failed_files():
-    """
-    Uruchamia interaktywne narzędzie do ponawiania pobierania dla plików,
-    które wcześniej zakończyły się błędem.
-    """
+    """Uruchamia interaktywne narzędzie do ponawiania pobierania dla plików, które wcześniej zakończyły się błędem."""
     console.clear()
     console.print(Panel("[bold yellow]🛠️ Interaktywne Narzędzie do Ponawiania Błędów 🛠️[/]", border_style="yellow"))
-    
     failed_urls = await get_failed_urls_from_db()
     if not failed_urls:
         console.print("\n[bold green]✅ Gratulacje! Nie znaleziono żadnych plików z błędami do naprawy.[/bold green]")
         return
-
-    # Używamy uniwersalnego selektora z utils.py do wyboru URL-i
+    
     from .utils import _interactive_file_selector
     selected_urls = await _interactive_file_selector(failed_urls, "Wybierz URL-e do ponowienia")
 
@@ -270,38 +209,30 @@ async def interactive_retry_failed_files():
         logger.warning("Nie wybrano żadnych URL-i do ponowienia.")
         return
 
-    async with async_playwright() as p:
-        browser, page = None, None
-        try:
-            browser = await getattr(p, BROWSER_TYPE).launch_persistent_context(
-                Path(SESSION_DIR).expanduser(), headless=False, args=BROWSER_ARGS.get(BROWSER_TYPE)
-            )
-            page = await browser.new_page()
-            
-            # Sprawdzamy status logowania
-            from .session_logic import check_login_status
-            await check_login_status(page)
+    # Używamy menedżera restartów, aby obsłużyć ewentualne awarie przeglądarki
+    shared_restart_manager = {'count': 0}
+    for i, url in enumerate(selected_urls):
+        if shared_restart_manager['count'] > MAX_RESTARTS_ON_FAILURE:
+            console.print("[bold red]Osiągnięto globalny limit restartów. Przerywam pracę.[/bold red]"); break
+        
+        console.print(Panel(f"Praca nad plikiem [bold]{i + 1}/{len(selected_urls)}[/bold]\nURL: [dim]{url}[/dim]\n\n[cyan]Silnik zostanie uruchomiony w trybie widocznym (`headless=False`).[/cyan]", title="Ponawianie Błędu", style="yellow"))
+        await run_with_restarts(scan_mode='single_retry', headless_mode=False, single_url_to_process=url, restart_manager=shared_restart_manager)
+    
+    console.print("\n[bold green]✅ Zakończono proces ponawiania błędów.[/bold green]")
 
-            with Progress(TextColumn("[cyan]{task.description}"), BarColumn(), "[progress.percentage]{task.percentage:>3.0f}%", transient=True) as progress:
-                task = progress.add_task("Ponawiam...", total=len(selected_urls))
-                for url in selected_urls:
-                    progress.console.print(f"Przetwarzam: [dim]{url}[/dim]")
-                    await page.goto(url)
-                    success, status, details = await process_single_photo_page(
-                        page, page.url, 'forced'
-                    )
-                    if success:
-                        progress.console.print(f"[green]✅ Sukces:[/green] {details.get('filename', 'N/A')}")
-                    else:
-                        progress.console.print(f"[red]❌ Błąd:[/red] {details.get('error', 'Nieznany błąd')}")
-                    progress.update(task, advance=1)
 
-        except Exception as e:
-            logger.critical("Wystąpił krytyczny błąd podczas interaktywnego ponawiania.", exc_info=True)
-            console.print(f"\n[bold red]Wystąpił krytyczny błąd: {e}[/]")
-        finally:
-            if browser:
-                await browser.close()
+async def run_single_file_download():
+    """Uruchamia interaktywny proces pobierania pojedynczego pliku z podanego URL."""
+    console.clear()
+    console.print(Panel("[bold cyan]📥 Pobieranie Pojedynczego Pliku 📥[/bold cyan]", border_style="cyan"))
+    url = Prompt.ask("\n[bold]Wklej adres URL zdjęcia lub filmu, który chcesz pobrać[/bold]")
+    if not url.strip().startswith("http"):
+        console.print("[bold red]To nie jest prawidłowy adres URL. Anuluję.[/bold red]"); return
+    
+    console.print(Panel(f"Rozpoczynam pracę nad URL: [dim]{url}[/dim]\n\n[cyan]Silnik zostanie uruchomiony w trybie widocznym (`headless=False`).[/cyan]", title="Pobieranie w toku...", style="green"))
+    await run_with_restarts(scan_mode='single_retry', headless_mode=False, single_url_to_process=url)
+    console.print("\n[bold green]✅ Pobieranie pojedynczego pliku zakończone.[/bold green]")
+
 
 # ##############################################################################
 # ===                     SEKCJA 4: GŁÓWNA PĘTLA WYKONAWCZA SILNIKA            ===
@@ -314,7 +245,7 @@ async def run_master_downloader(scan_mode: str, retry_failed: bool, headless_mod
     if scan_mode == 'single_retry': start_url = single_url_to_process
     elif scan_mode == 'main': start_url = await get_state('last_scan_url') or START_URL
     else: await set_state('last_forced_scan_url', START_URL); start_url = START_URL
-
+    
     log_collector_deque = deque(maxlen=20)
     log_collector_handler = LogCollectorHandler(log_collector_deque)
     root_logger = logging.getLogger()
@@ -341,12 +272,16 @@ async def run_master_downloader(scan_mode: str, retry_failed: bool, headless_mod
         async with async_playwright() as p:
             with Live(layout, screen=True, auto_refresh=False, transient=True, vertical_overflow="visible") as live:
                 task_id = progress.add_task("Postęp", total=None, pobrane=0, pominiete=0, bledy=0)
+                
+                from .session_logic import check_login_status
                 context = await getattr(p, BROWSER_TYPE).launch_persistent_context(Path(SESSION_DIR).expanduser(), headless=headless_mode, accept_downloads=True, args=BROWSER_ARGS.get(BROWSER_TYPE))
                 page = await context.new_page()
+                await check_login_status(page)
+                
                 await page.bring_to_front()
                 cursor_task = asyncio.create_task(move_cursor_in_circles(page, stop_event, headless_mode))
                 if ENABLE_RESOURCE_BLOCKING: await page.route("**/*", block_unwanted_resources)
-
+                
                 if retry_failed:
                     failed_urls = await get_failed_urls_from_db()
                     if failed_urls:
@@ -355,8 +290,8 @@ async def run_master_downloader(scan_mode: str, retry_failed: bool, headless_mod
                         for url in failed_urls:
                             if stop_event.is_set(): break
                             if ENABLE_SHAKE_THE_SCAN:
-                                await page.goto(url, wait_until='load'); await page.keyboard.press(DIRECTION_KEY); await asyncio.sleep(2); await page.keyboard.press("ArrowRight" if DIRECTION_KEY == "ArrowLeft" else "ArrowLeft"); await asyncio.sleep(2)
-                            else: await page.goto(url, wait_until='load')
+                                await page.goto(url); await page.keyboard.press(DIRECTION_KEY); await asyncio.sleep(2); await page.keyboard.press("ArrowRight" if DIRECTION_KEY == "ArrowLeft" else "ArrowLeft"); await asyncio.sleep(2)
+                            else: await page.goto(url)
                             success, status, metadata = await process_single_photo_page(page, page.url, scan_mode)
                             recent_summaries.appendleft(_create_summary_panel(url, status, metadata))
                             if success:
@@ -367,15 +302,16 @@ async def run_master_downloader(scan_mode: str, retry_failed: bool, headless_mod
                             layout["summaries"].update(Panel(Group(*recent_summaries), title="Podsumowanie Ostatnich Operacji", border_style="green"))
                             live.refresh()
                         if not stop_event.is_set() and ENABLE_PAUSE_AFTER_REPAIR: live.stop(); Prompt.ask("\n[bold green]✅ Zakończono naprawę błędów. Naciśnij Enter...[/]"); live.start(refresh=True)
-
+                
                 progress.update(task_id, total=None, description="[bold green]Główny skan[/]")
-                await page.goto(start_url, wait_until='load')
-
+                await page.goto(start_url)
+                
                 if scan_mode == 'single_retry':
                     success, status, metadata = await process_single_photo_page(page, start_url, scan_mode)
-                    layout["summaries"].update(Panel(Group(_create_summary_panel(start_url, status, metadata)), title="Podsumowanie Ostatnich Operacji", border_style="green"))
-                    live.refresh(); await asyncio.sleep(1); return True
-
+                    live.stop()
+                    console.print(_create_summary_panel(start_url, status, metadata))
+                    return True
+                
                 pobrane, pominiete, bledy = 0, 0, 0
                 while not stop_event.is_set():
                     current_url = page.url
@@ -390,13 +326,13 @@ async def run_master_downloader(scan_mode: str, retry_failed: bool, headless_mod
                     else:
                         pominiete += 1
                         recent_summaries.appendleft(_create_summary_panel(current_url, "skipped", {}))
-
+                    
                     progress.update(task_id, pobrane=pobrane, pominiete=pominiete, bledy=bledy)
                     layout["summaries"].update(Panel(Group(*recent_summaries), title="Podsumowanie Ostatnich Operacji", border_style="green"))
                     live.refresh()
-
+                    
                     if not await unstoppable_navigate(page, current_url, status_text): break
-
+                    
                     if scan_mode == 'main': await set_state('last_scan_url', page.url)
                     elif scan_mode == 'forced': await set_state('last_forced_scan_url', page.url)
         clean_exit = True
@@ -414,9 +350,8 @@ async def run_master_downloader(scan_mode: str, retry_failed: bool, headless_mod
     return clean_exit
 
 # ##############################################################################
-# ===                     SEKCJA 5: MENEDŻER URUCHOMIENIA                      ===
+# ===           SEKCJA 5: "NIEŚMIERTELNY" MENEDŻER URUCHOMIENIA              ===
 # ##############################################################################
-
 async def run_with_restarts(
     scan_mode: str, retry_failed: bool = False, headless_mode: bool = False,
     single_url_to_process: str = None, restart_manager: dict = None

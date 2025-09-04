@@ -1,195 +1,90 @@
+# plik: core/path_fix_tool.py (Wersja z poprawioną logiką rozróżniania źródeł)
 # -*- coding: utf-8 -*-
 
-# plik: core/path_fix_tool.py
-# Wersja 7.0 - W pełni asynchroniczny i udokumentowany
-#
-# ##############################################################################
-# ===                     MODUŁ NAPRAWY ŚCIEŻEK W BAZIE                      ===
-# ##############################################################################
-#
-# To narzędzie jest "chirurgiem" dla ścieżek plików w bazie danych. Jego
-# głównym zadaniem jest naprawa bazy po tym, jak użytkownik ręcznie
-# przeniósł cały folder z pobranymi plikami (`DOWNLOADS_DIR_BASE`) w inne
-# miejsce na dysku.
-#
-# Narzędzie inteligentnie wykrywa starą, nieaktualną część ścieżki i
-# automatycznie zamienia ją na nową, poprawną ścieżkę z pliku `config.py`.
-#
-################################################################################
-
-# --- GŁÓWNE IMPORTY ---
-import re
 import logging
 from pathlib import Path
 import asyncio
 
-# --- Importy asynchroniczne ---
-import aiosqlite
-
-# --- IMPORTY Z BIBLIOTEKI `rich` ---
 from rich.console import Console
 from rich.panel import Panel
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Confirm
+from rich.progress import Progress
 
-# --- IMPORTY Z WŁASNYCH MODUŁÓW ---
-from .config import DATABASE_FILE, DOWNLOADS_DIR_BASE
+from .config import DOWNLOADS_DIR_BASE
+# NOWE IMPORTY Z MODUŁU BAZY DANYCH
+from .database import get_downloaded_entries_for_path_fixing, update_paths_for_entry_by_id
 
-# --- Inicjalizacja i Konfiguracja Modułu ---
-console = Console(record=True)
+console = Console()
 logger = logging.getLogger(__name__)
-
-
-async def find_path_issue() -> tuple[str | None, str | None]:
-    """
-    Asynchronicznie i inteligentnie analizuje bazę danych w poszukiwaniu
-    nieaktualnych prefiksów ścieżek plików.
-
-    Funkcja ta:
-    1.  Pobiera aktualną, poprawną ścieżkę bazową (`DOWNLOADS_DIR_BASE`)
-        z pliku konfiguracyjnego.
-    2.  Szuka w bazie danych pierwszego rekordu, którego ścieżka `final_path`
-        nie zaczyna się od poprawnego prefiksu.
-    3.  Jeśli znajdzie taki rekord, próbuje automatycznie zidentyfikować,
-        która część ścieżki jest nieaktualna. Robi to, szukając w ścieżce
-        pierwszej struktury folderu daty (np. `/2023/10/`) i zakładając,
-        że wszystko *przed* tą strukturą jest starym, niepoprawnym prefiksem.
-
-    Returns:
-        tuple[str | None, str | None]: Krotka zawierająca:
-            (nieaktualny_prefiks, nowy_poprawny_prefiks).
-            Zwraca (None, None), jeśli nie znaleziono problemów lub
-            wystąpił błąd.
-    """
-    logger.info("Rozpoczynam analizę bazy danych w poszukiwaniu problemów ze ścieżkami...")
-    try:
-        correct_base_path = str(Path(DOWNLOADS_DIR_BASE).resolve())
-        logger.debug(f"Oczekiwany prefiks ścieżki: '{correct_base_path}'")
-        
-        async with aiosqlite.connect(DATABASE_FILE) as conn:
-            # Szukamy JEDNEGO przykładowego wiersza, który ma problem.
-            # aiosqlite nie wspiera SUBSTR, więc musimy użyć LIKE z negacją.
-            query = """
-                SELECT final_path FROM downloaded_media 
-                WHERE final_path IS NOT NULL AND final_path != '' 
-                AND final_path NOT LIKE ? 
-                LIMIT 1
-            """
-            # Wzorzec LIKE: ścieżka MUSI zaczynać się od...
-            pattern = f"{correct_base_path}%"
-            cursor = await conn.execute(query, (pattern,))
-            sample_path_tuple = await cursor.fetchone()
-
-            if not sample_path_tuple:
-                logger.info("Analiza zakończona. Nie znaleziono żadnych nieprawidłowych ścieżek.")
-                return None, None
-            
-            sample_path = sample_path_tuple[0]
-            logger.warning(f"Wykryto potencjalny problem. Przykładowa błędna ścieżka: '{sample_path}'")
-
-            # Inteligentne wykrywanie części do zamiany
-            match = re.search(r'([/\\]\d{4}[/\\]\d{2}[/\\])', sample_path)
-            if not match:
-                logger.error(f"Nie można automatycznie zidentyfikować struktury daty (ROK/MIESIĄC) w ścieżce '{sample_path}'.")
-                return None, None
-            
-            bad_part_end_index = match.start()
-            bad_part = sample_path[:bad_part_end_index]
-            
-            logger.info(f"Automatycznie zidentyfikowano nieaktualny prefiks do zamiany: '{bad_part}'")
-            return bad_part, correct_base_path
-            
-    except aiosqlite.Error as e:
-        logger.critical("Wystąpił błąd bazy danych podczas analizy ścieżek.", exc_info=True)
-        return None, None
-    except Exception as e:
-        logger.critical("Wystąpił nieoczekiwany błąd podczas analizy ścieżek.", exc_info=True)
-        return None, None
-
-# plik: core/path_fix_tool.py
-
-async def _update_paths_in_db(bad_part: str, good_part: str) -> tuple[int, int]:
-    """
-    Asynchronicznie wykonuje operację UPDATE na bazie danych, zastępując
-    nieaktualny prefiks ścieżki nowym.
-
-    Args:
-        bad_part (str): Stary, niepoprawny prefiks ścieżki do usunięcia.
-        good_part (str): Nowy, poprawny prefiks ścieżki do wstawienia.
-
-    Returns:
-        tuple[int, int]: Krotka zawierająca (liczba_zaktualizowanych_final_path,
-                                          liczba_zaktualizowanych_expected_path).
-    """
-    async with aiosqlite.connect(DATABASE_FILE) as conn:
-        logger.info("Aktualizuję kolumnę 'final_path'...")
-        cursor = await conn.execute(
-            "UPDATE downloaded_media SET final_path = REPLACE(final_path, ?, ?)",
-            (bad_part, good_part)
-        )
-        updated_final = cursor.rowcount
-        logger.info(f"Zaktualizowano {updated_final} wpisów w 'final_path'.")
-        
-        logger.info("Aktualizuję kolumnę 'expected_path'...")
-        cursor = await conn.execute(
-            "UPDATE downloaded_media SET expected_path = REPLACE(expected_path, ?, ?)",
-            (bad_part, good_part)
-        )
-        updated_expected = cursor.rowcount
-        logger.info(f"Zaktualizowano {updated_expected} wpisów w 'expected_path'.")
-
-        await conn.commit()
-        return updated_final, updated_expected
 
 async def run_path_fixer():
     """
-    Uruchamia główne narzędzie do resynchronizacji ścieżek w bazie danych.
-
-    Proces:
-    1.  Wywołuje `find_path_issue` do zdiagnozowania problemu.
-    2.  Jeśli problem zostanie znaleziony, prezentuje użytkownikowi czytelny
-        plan naprawy, pokazując, co i na co zostanie zamienione.
-    3.  Po uzyskaniu potwierdzenia, wywołuje `_update_paths_in_db` do
-        wykonania operacji `UPDATE` na bazie.
+    Uruchamia narzędzie do masowej naprawy ścieżek w bazie danych dla plików,
+    które zostały pobrane (a nie zaimportowane lokalnie).
     """
     console.clear()
-    logger.info("Uruchamiam Narzędzie do Naprawy Ścieżek Plików...")
-    console.print(Panel("🔧 Narzędzie do Naprawy Ścieżek Plików w Bazie Danych 🔧", expand=False, border_style="cyan"))
+    logger.info("Uruchamiam narzędzie do naprawy ścieżek w bazie danych.")
+    console.print(Panel("🛠️ Narzędzie do Naprawy Ścieżek Plików 🛠️", expand=False, style="bold blue"))
 
-    # Krok 1: Zdiagnozuj problem
-    with console.status("[cyan]Analizuję bazę danych...[/]"):
-        bad_part, good_part = await find_path_issue()
-
-    if bad_part is None:
-        console.print("\n[bold green]✅ Analiza zakończona. Wygląda na to, że wszystkie ścieżki w bazie są już poprawne.[/bold green]")
-        return
-
-    # Krok 2: Wyświetl plan naprawy i poproś o potwierdzenie
-    plan_text = (
-        "Narzędzie zamierza zastąpić nieaktualny prefiks ścieżki:\n\n"
-        f"[bold red]'{bad_part}'[/]\n\n"
-        "na aktualny prefiks z Twojej konfiguracji:\n\n"
-        f"[bold green]'{good_part}'[/]\n\n"
-        "Operacja zostanie wykonana dla kolumn `final_path` oraz `expected_path`."
-    )
-    console.print(f"\n[cyan]Wykryto problem do naprawienia. Planowane działanie:[/cyan]")
-    console.print(Panel(plan_text, title="[bold yellow]PLAN NAPRAWY[/]", border_style="yellow"))
-
-    if not Confirm.ask("\n[bold]Czy na pewno chcesz kontynuować?[/bold]", default=False):
-        logger.warning("Operacja naprawy ścieżek anulowana przez użytkownika.")
-        return
-
-    # Krok 3: Wykonaj operację na bazie danych
     try:
-        with console.status("[bold yellow]Aktualizuję bazę danych... To może potrwać kilka minut.[/]", spinner="earth"):
-            updated_final, updated_expected = await _update_paths_in_db(bad_part, good_part)
+        # Krok 1: Pobierz do analizy TYLKO pliki pobrane, ignorując lokalne.
+        all_entries = await get_downloaded_entries_for_path_fixing()
+        if not all_entries:
+            console.print("\n[green]Nie znaleziono żadnych ścieżek (dla pobranych plików) do analizy w bazie danych.[/green]")
+            return
 
-        console.print(f"\n[bold green]✅ Sukces! Zaktualizowano [cyan]{updated_final}[/cyan] ścieżek rzeczywistych (`final_path`).[/bold green]")
-        console.print(f"[bold green]✅ Sukces! Zaktualizowano [cyan]{updated_expected}[/cyan] ścieżek oczekiwanych (`expected_path`).[/bold green]")
-        logger.info("Operacja naprawy ścieżek zakończona pomyślnie.")
+        current_prefix = Path(DOWNLOADS_DIR_BASE).resolve()
+        
+        # Krok 2: Znajdź stary, nieaktualny prefiks w pobranych plikach
+        old_prefix_str = None
+        for entry in all_entries:
+            path = Path(entry['final_path'])
+            # Sprawdzamy, czy ścieżka w bazie jest zgodna z aktualną konfiguracją
+            if not path.is_relative_to(current_prefix):
+                # Znaleźliśmy ścieżkę, która nie pasuje. Obliczamy jej stary prefiks.
+                num_parts_to_keep = len(path.parts) - len(current_prefix.parts)
+                if num_parts_to_keep > 0:
+                    old_prefix = Path(*path.parts[:num_parts_to_keep])
+                    old_prefix_str = str(old_prefix)
+                    break
 
-    except aiosqlite.Error as e:
-        logger.critical("Wystąpił krytyczny błąd podczas aktualizacji bazy danych.", exc_info=True)
-        console.print(f"[bold red]Wystąpił błąd bazy danych: {e}[/bold red]")
+        if not old_prefix_str:
+            console.print(f"\n[bold green]✅ Wszystkie ścieżki w bazie ({len(all_entries)}) są aktualne i zgodne z prefiksem:[/]\n[cyan]{current_prefix}[/]")
+            return
+
+        # Krok 3: Poproś o potwierdzenie
+        console.print(Panel(
+            f"Narzędzie zamierza zastąpić nieaktualny prefiks ścieżki:\n\n"
+            f"[red]'{old_prefix_str}'[/]\n\n"
+            f"na aktualny prefiks z Twojej konfiguracji:\n\n"
+            f"[green]'{current_prefix}'[/]\n\n"
+            f"Operacja zostanie wykonana dla kolumn `final_path` oraz `expected_path`.",
+            title="[bold yellow]Potwierdzenie Operacji[/]",
+            border_style="yellow"
+        ))
+
+        if not Confirm.ask("\n[bold]Czy na pewno chcesz kontynuować?[/]", default=True):
+            logger.warning("Naprawa ścieżek anulowana przez użytkownika.")
+            return
+
+        # Krok 4: Wykonaj naprawę
+        updated_count = 0
+        with Progress() as progress:
+            task = progress.add_task("[green]Aktualizuję ścieżki...", total=len(all_entries))
+            for entry in all_entries:
+                old_final_path_str = entry['final_path']
+                if old_final_path_str.startswith(old_prefix_str):
+                    new_final_path = old_final_path_str.replace(old_prefix_str, str(current_prefix), 1)
+                    
+                    old_expected_path_str = entry['expected_path']
+                    new_expected_path = old_expected_path_str.replace(old_prefix_str, str(current_prefix), 1)
+
+                    await update_paths_for_entry_by_id(entry['id'], new_final_path, new_expected_path)
+                    updated_count += 1
+                progress.update(task, advance=1)
+
+        console.print(f"\n[bold green]✅ Zakończono! Zaktualizowano {updated_count} wpisów w bazie danych.[/bold green]")
+
     except Exception as e:
-        logger.critical("Wystąpił nieoczekiwany błąd podczas aktualizacji bazy danych.", exc_info=True)
-        console.print(f"[bold red]Wystąpił nieoczekiwany błąd. Sprawdź plik logu.[/bold red]")
+        logger.critical(f"Wystąpił krytyczny błąd podczas naprawy ścieżek: {e}", exc_info=True)
+        console.print(f"\n[bold red]Wystąpił błąd krytyczny. Sprawdź logi.[/bold red]")
