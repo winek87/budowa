@@ -39,6 +39,7 @@ try:
     from core.database import setup_database
     from core.menu_logic import run_main_menu
     from core.utils import handle_shutdown_signal
+    from core.exif_writer.utils import setup_signal_handlers, handle_stop_signal
     # Importujemy cały moduł config, aby mieć dostęp do wszystkich stałych ustawień.
     from core import config
 except ImportError as e:
@@ -136,6 +137,7 @@ async def main():
     Wykonuje kluczowe kroki startowe w odpowiedniej kolejności i zawiera
     główną obsługę błędów na poziomie całej aplikacji.
     """
+    setup_signal_handlers()
     try:
         # Krok 1: Skonfiguruj system logowania jako pierwszą czynność
         setup_global_logging()
@@ -143,7 +145,7 @@ async def main():
 
         # Krok 2: Przygotuj bazę danych (utwórz tabele, jeśli nie istnieją)
         logger.debug("Inicjalizacja bazy danych...")
-        setup_database()
+        await setup_database()
         logger.info("Baza danych została pomyślnie zainicjalizowana.")
 
         # Krok 3: Ustaw nasłuchiwanie na sygnał Ctrl+C

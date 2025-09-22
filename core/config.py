@@ -20,7 +20,7 @@ import os
 # Ta zmienna jest używana do budowania ścieżek względnych wewnątrz projektu.
 # Powinna wskazywać na główny folder, w którym znajduje się plik uruchom.py.
 # ZMIANA: Konwertujemy string na obiekt Path dla łatwiejszych operacji.
-PROJECT_ROOT = "/media/MyDrive/budowa4"
+PROJECT_ROOT = " "
 
 # --- Funkcja pomocnicza do tworzenia folderów ---
 def ensure_dir(path: Path):
@@ -45,30 +45,49 @@ def ensure_dir(path: Path):
 # Zastąp placeholder pełną ścieżką do folderu, np. "C:/Users/TwojaNazwa/google_photos_toolkit/session"
 # lub "/home/twojanazwa/google_photos_toolkit/session".
 # UŻYTKOWNIK DEFINIUJE SWOJĄ WŁASNĄ, ABSOLUTNĄ ŚCIEŻKĘ
-SESSION_DIR = "app_data/session"
+SESSION_DIR = "session"
 
-# Nazwa pliku bazy danych. To "pamiętnik" robota, w którym zapisuje postęp
-# i wszystkie zebrane informacje. Zazwyczaj nie ma potrzeby tego zmieniać.
-# Folder na bazę danych
-DATABASE_FILE = "app_data/DB/database.db"
+# --- USTAWIENIA BAZY DANYCH ---
+#
+# Wybierz typ bazy danych, z której chcesz korzystać.
+# Dostępne opcje:
+#  - "sqlite": (Domyślne) Prosta, szybka, plikowa baza danych. Nie wymaga serwera.
+#  - "mariadb": Zaawansowany serwer bazodanowy. Wymaga konfiguracji poniżej.
+#DB_TYPE = "sqlite" # ZMIEŃ NA "mariadb", ABY PRZEŁĄCZYĆ
+DB_TYPE = "mariadb"
+
+# Nazwa pliku dla bazy SQLite (używane, gdy DB_TYPE = "sqlite")
+DATABASE_FILE = "app_dataDB/database.db"
+
+# Ustawienia dla MariaDB/MySQL (używane, gdy DB_TYPE = "mariadb")
+DB_CONFIG_MARIADB = {
+        "host": "127.0.0.1",
+        "unix_socket": "/var/run/mysqld/mysqld.sock",
+        "port": 3306,
+        "user": " ",
+        "password": " ",
+        "db": " ",
+        "autocommit": True
+    }
 
 # Główny folder, w którym będą zapisywane pobrane zdjęcia i filmy.
 # Program automatycznie utworzy w nim podfoldery ROK/MIESIĄC.
 # Zastąp placeholder pełną ścieżką, np. "D:/Moje_Zdjecia_Google".
-DOWNLOADS_DIR_BASE = "PF"
+DOWNLOADS_DIR_BASE = "Download"
 
 # Folder na duplikaty z trybu wymuszonego skanowania.
 # Gdy uruchomisz skan w trybie "Wymuś pełne odświeżenie", a program napotka
 # plik, który już istnieje w głównej bibliotece, zapisze go w tym osobnym
 # folderze, zachowując strukturę ROK/MIESIĄC.
-FORCED_DUPLICATES_DIR = "PF/_DUPLIKATY_WYMUSZONE"
+FORCED_DUPLICATES_DIR = "Download/Duplikaty"
 
 # Nazwa pliku używanego przez narzędzia skanujące do wczytywania listy
 # adresów URL do przetworzenia. Używane przez "Skanuj z pliku".
-URL_INPUT_FILE = "ulr/urls_to_scan.txt"
+URL_INPUT_FILE = "app_data/urls_to_scan.txt"
 
 # Plik logu dla RichHandler
-LOG_FILENAME = "app_data/dziennik/app.log"
+LOG_FILENAME = "app_data/app.log"
+ACTIVE_LOG_FILE_PATH = "app_data/nowe.log"
 
 # ##############################################################################
 # ===                      SEKCJA 2: GŁÓWNE ZACHOWANIE SKANU                 ===
@@ -78,7 +97,7 @@ LOG_FILENAME = "app_data/dziennik/app.log"
 # WAŻNE: Wklej tutaj link do jednego z Twoich NAJSTARSZYCH zdjęć.
 # Dzięki temu program będzie poruszał się od przeszłości do teraźniejszości.
 START_URL = " "
-
+URL_START_PHOTO = " "
 # Kierunek nawigacji po galerii.
 # 'ArrowLeft'  -> do NOWSZYCH zdjęć (od przeszłości do teraźniejszości). ZALECANE.
 # 'ArrowRight' -> do STARSZYCH zdjęć (od teraźniejszości do przeszłości).
@@ -152,6 +171,13 @@ ENABLE_ACTION_DELAY = True
 # Zakres opóźnienia w sekundach (np. od 1.0 do 3.5 sekundy).
 ACTION_DELAY_RANGE = (1.0, 3.5)
 
+# --- USTAWIENIA PRZETWARZANIA WSADOWEGO (BATCH PROCESSING) ---
+
+# Liczba wpisów, które mają być zapisywane do bazy danych w jednej operacji.
+# Większa wartość może przyspieszyć działanie, ale zwiększa ryzyko utraty
+# danych w razie awarii przed zapisem.
+DB_BATCH_UPDATE_SIZE = 50
+
 # ##############################################################################
 # ===                 SEKCJA 5: ODPORNOŚĆ I ODZYSKIWANIE PO BŁĘDACH          ===
 # ##############################################################################
@@ -187,7 +213,7 @@ BROWSER_TYPE = "chromium"
 # Czy program ma domyślnie działać w tle (bez widocznego okna przeglądarki)?
 # True -> Działa w tle (szybciej, mniej zasobów).
 # False -> Działa z widocznym oknem (dobre do obserwacji i diagnozy).
-DEFAULT_HEADLESS_MODE = True
+DEFAULT_HEADLESS_MODE = False
 
 # Czy symulator kursora ma działać również w trybie cichym (headless)?
 # Może pomóc uniknąć wykrycia jako bot na niektórych stronach.
@@ -272,14 +298,14 @@ LOG_SAVE_TO_FILE = True
 # --- USTAWIENIA KOPII ZAPASOWEJ DANYCH (dla Menedżera w menu) ---
 
 # Folder na kopie zapasowe danych, umieszczony wewnątrz app_data.
-BACKUP_DIR = "/media/Kopia_Zapasowa_Danych"
+BACKUP_DIR = "app_data/Kopia_Zapasowa_Danych"
 
 # Lista kluczowych plików i folderów DANYCH dołączanych do tej kopii.
 # ZMIANA: Używamy PROJECT_ROOT do tworzenia bezpiecznych, absolutnych ścieżek.
 FILES_TO_BACKUP = [
-    "/media/config.py",
-    "/media/database.db",
-    "/media/session"
+    "core/config.py",
+    "app_data/DB/database.db",
+    "session"
 ]
 
 
@@ -294,7 +320,7 @@ AUTO_BACKUP_ON_START = False
 
 # Konfiguracja dla pełnego backupu projektu, wykonywanego przez launcher.
 PROJECT_BACKUP_CONFIG = {
-        "ARCHIVE_DIR": "/media/Kopia_Zapasowa_Projektu",
+        "ARCHIVE_DIR": "Kopia_Zapasowa_Projektu",
         "BASE_NAME": "projekt_backup",
         "PATTERNS_TO_EXCLUDE": [
             "*.pyc",
@@ -310,17 +336,60 @@ PROJECT_BACKUP_CONFIG = {
 #
 # Ta sekcja kontroluje zachowanie modułów sztucznej inteligencji.
 
+# Nazwa modelu klasyfikacji obrazów z Hugging Face, używanego przez AI Tagger.
+# Możesz tu w przyszłości wkleić nazwę innego kompatybilnego modelu.
+MODEL_NAME = "google/vit-base-patch16-224"
+
+AI_TAGGER_MODELS = [
+    {
+        "name": "Google ViT (Base, Patch 16, 224px) - Zalecany",
+        "path": "google/vit-base-patch16-224"
+    },
+    {
+        "name": "Microsoft BEiT (Base, Patch 16, 224px)",
+        "path": "microsoft/beit-base-patch16-224"
+    },
+    {
+        "name": "Facebook DeiT (Small, Patch 16, 224px) - Lżejszy",
+        "path": "facebook/deit-small-patch16-224"
+    }
+]
+
 # Ścieżka do folderu, w którym będą przechowywane pobrane modele AI (cache).
 # Jeśli zostawisz pusty string "", zostanie użyta domyślna lokalizacja
 # w folderze domowym użytkownika (np. ~/.cache/huggingface).
 # Przykład: "/media/MyDrive/google_photos_toolkit/ai_models_cache"
-AI_MODELS_CACHE_DIR = "/media/MyDrive/budowa4/ai_models_cache"
+AI_MODELS_CACHE_DIR = "app_data/ai_models_cache"
+
+# Domyślny model, który będzie aktywny po uruchomieniu programu.
+# Musi to być jedna z wartości 'path' z listy AI_TAGGER_MODELS powyżej.
+AI_TAGGER_DEFAULT_MODEL_PATH = "google/vit-base-patch16-224"
+
+# Tryb tłumaczenia tagów. Dostępne opcje:
+#  - 'polish':  (Domyślne) Tłumaczy tagi na język polski.
+#  - 'english': Pozostawia oryginalne, angielskie tagi.
+AI_TAGGER_TRANSLATION_MODE = "polish"
+
+# Rozmiar partii obrazów do przetwarzania przez AI naraz.
+# Kluczowy parametr dla wydajności i zużycia RAM na urządzeniach
+# o ograniczonych zasobach, jak Raspberry Pi.
+# Zalecane wartości: 4 lub 8. Zwiększaj ostrożnie.
+AI_PROCESSING_BATCH_SIZE = 4
 
 # Próg pewności (0.0 do 1.0) dla Inteligentnego Taggera AI.
 # Tag zostanie przypisany tylko, jeśli model AI jest go pewny na ponad 90%.
 # Możesz obniżyć tę wartość (np. do 0.8), aby uzyskać więcej tagów,
 # ale mogą być one mniej trafne.
-AI_TAGGER_CONFIDENCE_THRESHOLD = 0.9
+AI_TAGGER_CONFIDENCE_THRESHOLD = 0.1
+
+# --- USTAWIENIA INTERFEJSU UŻYTKOWNIKA DLA AI TAGGERA ---
+
+# Maksymalna liczba ostatnich akcji wyświetlanych w panelu logów.
+LOG_DEQUE_SIZE = 15
+
+# Maksymalny rozmiar miniatury (szerokość, wysokość) w panelu podglądu.
+# Wyrażony w "komórkach" terminala.
+THUMBNAIL_MAX_SIZE = (60, 30)
 
 # ##############################################################################
 # ===                SEKCJA 11: USTAWIENIA MODUŁÓW DODATKOWYCH              ===
@@ -337,13 +406,13 @@ AI_TAGGER_CONFIDENCE_THRESHOLD = 0.9
 #     "/mnt/dysk_zewnetrzny/Fotki_Rodzinne"
 # ]
 LOCAL_SCANNER_DIRECTORIES = [
-    "/media"
+    " "
 ]
 
 # Dedykowany folder do przechowywania baz wektorów dla rozpoznawania twarzy.
 # Zaleca się, aby był to folder poza główną biblioteką.
 # Przykład: "/home/uzytkownik/Aplikacje/FaceDB_Vectors"
-FACE_DB_VECTOR_PATH = "/media/FaceDB_Vectors"
+FACE_DB_VECTOR_PATH = "app_data/FaceDB_Vectors"
 
     
 # ##############################################################################
@@ -361,3 +430,11 @@ FACE_DB_VECTOR_PATH = "/media/FaceDB_Vectors"
 #  - 'sixel':  Próbuje wyświetlić obraz bezpośrednio w terminalu. Wymaga
 #              kompatybilnego emulatora terminala (np. iTerm2, Kitty, WezTerm).
 IMAGE_VIEWER_MODE = "eog-unsafe"
+
+
+BATCH_SIZE = 10
+try:
+    import exiftool
+    EXIFTOOL_AVAILABLE = True
+except ImportError:
+    EXIFTOOL_AVAILABLE = False

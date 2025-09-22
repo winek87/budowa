@@ -44,7 +44,8 @@ from .utils import (
     create_interactive_menu, get_date_from_metadata,
     create_unique_filepath, LogCollectorHandler
 )
-from .master_logic import process_single_photo_page, unstoppable_navigate
+from .downloader.page_navigator import unstoppable_navigate
+from .downloader.page_processor import process_single_photo_page
 from .database import get_state
 from .config_editor_logic import get_key
 
@@ -300,7 +301,6 @@ async def run_engine_integration_tests():
     current_step_index = -1; test_passed = False; error_message = ""
 
     def generate_live_layout() -> Layout:
-        # Logika renderowania UI pozostaje bez zmian
         status_table = Table.grid(padding=(0, 2))
         status_table.add_column("Krok", style="cyan", no_wrap=True, width=45)
         status_table.add_column("Status", justify="left")
